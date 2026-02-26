@@ -1,15 +1,11 @@
-import os
 import requests
 import statistics
-import threading
-import time
 from flask import Flask, jsonify, render_template
 from datetime import datetime
 
 app = Flask(__name__)
 
 KRAKEN_URL = "https://api.kraken.com/0/public"
-CACHE = {"data": [], "updated": "Loading..."}
 
 
 def clean_symbol(pair):
@@ -97,19 +93,6 @@ def build_market():
     return markets[:20]
 
 
-def updater():
-    while True:
-        try:
-            CACHE["data"] = build_market()
-            CACHE["updated"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-        except:
-            CACHE["updated"] = "Error updating"
-        time.sleep(60)
-
-
-threading.Thread(target=updater, daemon=True).start()
-
-
 @app.route("/")
 def home():
     return render_template("index.html")
@@ -117,7 +100,12 @@ def home():
 
 @app.route("/api/data")
 def api_data():
+    markets = build_market()
     return jsonify({
-        "updated": CACHE["updated"],
-        "markets": CACHE["data"]
+        "updated": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "markets": markets
     })
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
