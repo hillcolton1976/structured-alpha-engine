@@ -1,46 +1,60 @@
-app.get('/signals', async (req, res) => {
-    try {
-        const pairs = ["XBTUSD", "ETHUSD", "SOLUSD", "XRPUSD"];
-        let results = [];
+const express = require("express");
+const axios = require("axios");
 
-        for (let pair of pairs) {
-            const response = await axios.get(
-                `https://api.kraken.com/0/public/Ticker?pair=${pair}`
-            );
+const app = express();
+const PORT = process.env.PORT || 8080;
 
-            const dataKey = Object.keys(response.data.result)[0];
-            const ticker = response.data.result[dataKey];
+app.get("/", (req, res) => {
+  res.send("Structured Alpha Engine Running");
+});
 
-            const price = parseFloat(ticker.c[0]);
-            const volume = parseFloat(ticker.v[1]);
+app.get("/signals", async (req, res) => {
+  try {
+    const pairs = ["XBTUSD", "ETHUSD", "SOLUSD", "XRPUSD"];
+    let results = [];
 
-            let score = 0;
+    for (let pair of pairs) {
+      const response = await axios.get(
+        `https://api.kraken.com/0/public/Ticker?pair=${pair}`
+      );
 
-            if (price > 1) score += 2;
-            if (volume > 100000) score += 2;
-            if (Math.random() > 0.5) score += 2; // temporary momentum placeholder
+      const dataKey = Object.keys(response.data.result)[0];
+      const ticker = response.data.result[dataKey];
 
-            let action = "HOLD";
-            if (score >= 4) action = "BUY";
-            if (score <= 1) action = "SELL";
+      const price = parseFloat(ticker.c[0]);
+      const volume = parseFloat(ticker.v[1]);
 
-            results.push({
-                pair,
-                price,
-                volume,
-                score,
-                action
-            });
-        }
+      let score = 0;
 
-        results.sort((a, b) => b.score - a.score);
+      if (price > 1) score += 2;
+      if (volume > 100000) score += 2;
+      if (Math.random() > 0.5) score += 2;
 
-        res.json({
-            best_trade: results[0],
-            all_pairs: results
-        });
+      let action = "HOLD";
+      if (score >= 4) action = "BUY";
+      if (score <= 1) action = "SELL";
 
-    } catch (error) {
-        res.status(500).json({ error: "Failed to fetch market data" });
+      results.push({
+        pair,
+        price,
+        volume,
+        score,
+        action
+      });
     }
+
+    results.sort((a, b) => b.score - a.score);
+
+    res.json({
+      best_trade: results[0],
+      all_pairs: results
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch market data" });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
