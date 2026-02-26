@@ -80,3 +80,15 @@ cron.schedule("*/5 * * * *", () => {
   console.log("Running market scan...");
   scanMarket();
 });
+app.get('/signals', async (req, res) => {
+    const signal = {
+        pair: "BTC/USD",
+        trend: "Bullish",
+        rsi: 38,
+        momentum: "Building",
+        action: "BUY",
+        confidence: "High"
+    };
+
+    res.json(signal);
+});
