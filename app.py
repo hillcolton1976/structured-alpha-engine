@@ -1,52 +1,49 @@
 from flask import Flask, render_template
 import requests
-import datetime
 import statistics
+from datetime import datetime
 
 app = Flask(__name__)
 
-KRAKEN_TICKER_URL = "https://api.kraken.com/0/public/Ticker"
-KRAKEN_OHLC_URL = "https://api.kraken.com/0/public/OHLC"
+KRAKEN_TICKER = "https://api.kraken.com/0/public/Ticker"
+KRAKEN_OHLC = "https://api.kraken.com/0/public/OHLC"
 
-# Major strong coins only
+# Major coins only (stable + realistic)
 COINS = {
-    "BTC": "XXBTZUSD",
-    "ETH": "XETHZUSD",
+    "BTC": "XBTUSD",
+    "ETH": "ETHUSD",
     "SOL": "SOLUSD",
-    "ADA": "ADAUSD",
     "XRP": "XRPUSD",
-    "AVAX": "AVAXUSD",
+    "ADA": "ADAUSD",
     "DOT": "DOTUSD",
     "LINK": "LINKUSD",
-    "MATIC": "MATICUSD",
-    "ATOM": "ATOMUSD",
+    "AVAX": "AVAXUSD",
     "LTC": "LTCUSD",
     "BCH": "BCHUSD"
 }
 
-
 def get_price(pair):
     try:
-        r = requests.get(KRAKEN_TICKER_URL, params={"pair": pair}, timeout=10).json()
-        result = list(r["result"].values())[0]
+        r = requests.get(KRAKEN_TICKER, params={"pair": pair}, timeout=5)
+        data = r.json()
+        result = list(data["result"].values())[0]
         return float(result["c"][0])
     except:
         return None
 
-
 def get_daily_closes(pair):
     try:
         r = requests.get(
-            KRAKEN_OHLC_URL,
+            KRAKEN_OHLC,
             params={"pair": pair, "interval": 1440},
-            timeout=10
-        ).json()
-        result = list(r["result"].values())[0]
+            timeout=5
+        )
+        data = r.json()
+        result = list(data["result"].values())[0]
         closes = [float(candle[4]) for candle in result]
         return closes
     except:
         return []
-
 
 def analyze_coin(symbol, pair):
     price = get_price(pair)
@@ -57,13 +54,20 @@ def analyze_coin(symbol, pair):
 
     ma50 = statistics.mean(closes[-50:])
     ma200 = statistics.mean(closes[-200:])
+
+    # Percentage based MA trend
+    ma_trend = (ma50 - ma200) / ma200
+
+    # 30 day momentum %
     momentum = (closes[-1] - closes[-30]) / closes[-30]
 
-    score = round((ma50 - ma200) + (momentum * 100), 4)
+    # Final normalized score
+    score = round((ma_trend * 100) + (momentum * 100), 2)
 
-    if price > ma200 and momentum > 0:
+    # Classification
+    if ma_trend > 0 and momentum > 0:
         strength = "STRONG"
-    elif price > ma200:
+    elif ma_trend > 0:
         strength = "ACCUMULATION"
     else:
         strength = "WEAK"
@@ -75,7 +79,6 @@ def analyze_coin(symbol, pair):
         "strength": strength
     }
 
-
 @app.route("/")
 def home():
     results = []
@@ -85,12 +88,14 @@ def home():
         if data:
             results.append(data)
 
+    # Sort by score descending
     results = sorted(results, key=lambda x: x["score"], reverse=True)
 
-    updated = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-
-    return render_template("index.html", coins=results, updated=updated)
-
+    return render_template(
+        "index.html",
+        coins=results,
+        updated=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    )
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run(debug=True)
