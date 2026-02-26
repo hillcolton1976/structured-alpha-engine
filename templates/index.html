@@ -1,12 +1,11 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Long-Term Crypto Strength Scanner</title>
-    <meta http-equiv="refresh" content="600">
+    <title>Crypto Strength Scanner</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
-            background: linear-gradient(to right, #0f2027, #203a43, #2c5364);
+            background: #0f2027;
+            font-family: Arial;
             color: white;
             padding: 40px;
         }
@@ -19,8 +18,8 @@
             width: 100%;
             border-collapse: collapse;
             margin-top: 20px;
-            background-color: rgba(255,255,255,0.05);
-            border-radius: 12px;
+            background: #1c2b36;
+            border-radius: 10px;
             overflow: hidden;
         }
 
@@ -30,62 +29,74 @@
         }
 
         th {
-            background-color: rgba(255,255,255,0.1);
-            letter-spacing: 1px;
+            background: #243b55;
         }
 
         tr:nth-child(even) {
-            background-color: rgba(255,255,255,0.05);
+            background: #16222a;
         }
 
-        .strong {
-            color: #4CAF50;
-            font-weight: bold;
-        }
+        .STRONG { color: #4CAF50; font-weight: bold; }
+        .NEUTRAL { color: #FFC107; font-weight: bold; }
+        .WEAK { color: #F44336; font-weight: bold; }
 
-        .neutral {
-            color: #FFC107;
-            font-weight: bold;
-        }
-
-        .weak {
-            color: #F44336;
-            font-weight: bold;
+        #updated {
+            margin-top: 10px;
+            opacity: 0.7;
         }
     </style>
 </head>
 <body>
 
-<h1>📈 Long-Term Crypto Strength Scanner</h1>
-<p>Updated: {{ updated }}</p>
+<h1>📈 Long-Term Crypto Strength</h1>
+<div id="updated"></div>
 
 <table>
-    <tr>
-        <th>#</th>
-        <th>Pair</th>
-        <th>Price</th>
-        <th>Score</th>
-        <th>Strength</th>
-    </tr>
-
-    {% for m in markets %}
-    <tr>
-        <td>{{ loop.index }}</td>
-        <td>{{ m.pair }}</td>
-        <td>${{ m.price }}</td>
-        <td>{{ m.score }}</td>
-        <td class="
-            {% if m.strength == 'STRONG' %}strong
-            {% elif m.strength == 'NEUTRAL' %}neutral
-            {% else %}weak
-            {% endif %}
-        ">
-            {{ m.strength }}
-        </td>
-    </tr>
-    {% endfor %}
-
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Coin</th>
+            <th>Price</th>
+            <th>Score</th>
+            <th>Strength</th>
+        </tr>
+    </thead>
+    <tbody id="table-body">
+    </tbody>
 </table>
+
+<script>
+async function loadData() {
+    const response = await fetch('/api/data');
+    const data = await response.json();
+
+    document.getElementById("updated").innerText = 
+        "Updated: " + data.updated;
+
+    const tbody = document.getElementById("table-body");
+    tbody.innerHTML = "";
+
+    data.markets.forEach((coin, index) => {
+        tbody.innerHTML += `
+            <tr>
+                <td>${index + 1}</td>
+                <td>${coin.pair}</td>
+                <td>$${coin.price}</td>
+                <td>${coin.score}</td>
+                <td class="${coin.strength}">
+                    ${coin.strength}
+                </td>
+            </tr>
+        `;
+    });
+}
+
+// Initial load
+loadData();
+
+// Refresh every 60 seconds
+setInterval(loadData, 60000);
+</script>
 
 </body>
 </html>
