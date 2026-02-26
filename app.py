@@ -1,22 +1,23 @@
 import os
 import requests
-from flask import Flask, render_template
-from datetime import datetime
 import statistics
+import threading
+import time
+from flask import Flask, jsonify, render_template
+from datetime import datetime
 
 app = Flask(__name__)
 
 KRAKEN_URL = "https://api.kraken.com/0/public"
-CACHE = {"data": [], "last_update": None}
+CACHE = {"data": [], "updated": None}
 
 
 # =========================
-# CLEAN SYMBOL
+# CLEAN SYMBOL FORMAT
 # =========================
 def clean_symbol(pair):
     pair = pair.replace("ZUSD", "").replace("USD", "")
-    pair = pair.replace("XBT", "BTC")
-    pair = pair.replace("XXBT", "BTC")
+    pair = pair.replace("XXBT", "BTC").replace("XBT", "BTC")
     pair = pair.replace("XETH", "ETH")
     pair = pair.replace("XXRP", "XRP")
     pair = pair.replace("XXDG", "DOGE")
@@ -46,7 +47,7 @@ def get_usd_pairs():
 
 
 # =========================
-# GET DAILY DATA
+# GET DAILY CANDLES
 # =========================
 def get_daily_data(pair):
     try:
@@ -61,7 +62,6 @@ def get_daily_data(pair):
 
         candles = resp["result"][pair]
         closes = [float(c[4]) for c in candles]
-
         return closes
 
     except:
@@ -69,7 +69,7 @@ def get_daily_data(pair):
 
 
 # =========================
-# SCORE
+# LONG TERM SCORE
 # =========================
 def calculate_score(closes):
     if len(closes) < 200:
@@ -115,29 +115,35 @@ def build_market():
 
 
 # =========================
-# ROUTE
+# BACKGROUND REFRESH LOOP
+# =========================
+def updater():
+    while True:
+        CACHE["data"] = build_market()
+        CACHE["updated"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        time.sleep(60)
+
+
+# =========================
+# ROUTES
 # =========================
 @app.route("/")
 def home():
-    global CACHE
+    return render_template("index.html")
 
-    # Only refresh every 10 minutes
-    if not CACHE["last_update"] or (datetime.utcnow() - CACHE["last_update"]).seconds > 600:
-        CACHE["data"] = build_market()
-        CACHE["last_update"] = datetime.utcnow()
 
-    updated = CACHE["last_update"].strftime("%Y-%m-%d %H:%M UTC")
-
-    return render_template(
-        "index.html",
-        markets=CACHE["data"],
-        updated=updated
-    )
+@app.route("/api/data")
+def api_data():
+    return jsonify({
+        "updated": CACHE["updated"],
+        "markets": CACHE["data"]
+    })
 
 
 # =========================
-# START SERVER
+# START APP
 # =========================
 if __name__ == "__main__":
+    threading.Thread(target=updater, daemon=True).start()
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
