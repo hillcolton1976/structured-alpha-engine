@@ -53,7 +53,7 @@ async function getSignals() {
 
     let action = "HOLD";
     if (score >= 7) action = "BUY";
-    if (score <= 2) action = "AVOID";
+    if (score <= 2) action = "SELL";
 
     results.push({
       pair,
@@ -71,21 +71,6 @@ async function getSignals() {
   return results.slice(0, 15);
 }
 
-// JSON API
-app.get("/signals", async (req, res) => {
-  try {
-    const results = await getSignals();
-    res.json({
-      timestamp: new Date(),
-      best_trade: results[0],
-      top_trades: results
-    });
-  } catch (error) {
-    res.status(500).json({ error: "Engine failed" });
-  }
-});
-
-// Dashboard UI
 app.get("/", async (req, res) => {
   try {
     const results = await getSignals();
@@ -93,13 +78,13 @@ app.get("/", async (req, res) => {
     let rows = results.map(r => {
       let color =
         r.action === "BUY" ? "#00ff88" :
-        r.action === "AVOID" ? "#ff4d4d" :
+        r.action === "SELL" ? "#ff4d4d" :
         "#ffd700";
 
-      let tradeButton = "";
+      let button = "";
 
       if (r.action === "BUY") {
-        tradeButton = `
+        button = `
           <a href="https://trade.kraken.com/charts/KRAKEN:${r.pair}"
              target="_blank"
              style="
@@ -110,7 +95,24 @@ app.get("/", async (req, res) => {
                text-decoration:none;
                font-weight:bold;
              ">
-             TRADE
+             BUY
+          </a>
+        `;
+      }
+
+      if (r.action === "SELL") {
+        button = `
+          <a href="https://trade.kraken.com/charts/KRAKEN:${r.pair}"
+             target="_blank"
+             style="
+               background:#ff4d4d;
+               color:white;
+               padding:6px 12px;
+               border-radius:8px;
+               text-decoration:none;
+               font-weight:bold;
+             ">
+             SELL
           </a>
         `;
       }
@@ -125,7 +127,7 @@ app.get("/", async (req, res) => {
           <td style="color:${color}; font-weight:bold;">
             ${r.action}
           </td>
-          <td>${tradeButton}</td>
+          <td>${button}</td>
         </tr>
       `;
     }).join("");
