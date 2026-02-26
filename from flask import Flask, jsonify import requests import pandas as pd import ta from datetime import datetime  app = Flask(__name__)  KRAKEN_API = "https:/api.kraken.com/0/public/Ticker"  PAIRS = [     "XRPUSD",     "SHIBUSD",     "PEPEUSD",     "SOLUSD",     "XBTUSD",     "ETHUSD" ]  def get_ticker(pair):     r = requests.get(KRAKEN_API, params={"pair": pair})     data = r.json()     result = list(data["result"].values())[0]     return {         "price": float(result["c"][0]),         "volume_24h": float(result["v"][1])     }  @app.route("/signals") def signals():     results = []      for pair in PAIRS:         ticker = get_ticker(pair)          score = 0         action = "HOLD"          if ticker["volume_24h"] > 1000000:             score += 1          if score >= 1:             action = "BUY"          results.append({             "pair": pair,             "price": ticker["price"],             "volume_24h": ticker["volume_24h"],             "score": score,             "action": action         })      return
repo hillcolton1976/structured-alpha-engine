@@ -1,0 +1,60 @@
+from flask import Flask, jsonify
+import requests
+import pandas as pd
+import ta
+from datetime import datetime
+
+app = Flask(__name__)
+
+KRAKEN_API = "https://api.kraken.com/0/public/Ticker"
+
+PAIRS = [
+    "XRPUSD",
+    "SHIBUSD",
+    "PEPEUSD",
+    "SOLUSD",
+    "XBTUSD",
+    "ETHUSD"
+]
+
+def get_ticker(pair):
+    r = requests.get(KRAKEN_API, params={"pair": pair})
+    data = r.json()
+    result = list(data["result"].values())[0]
+    return {
+        "price": float(result["c"][0]),
+        "volume_24h": float(result["v"][1])
+    }
+
+@app.route("/signals")
+def signals():
+    results = []
+
+    for pair in PAIRS:
+        ticker = get_ticker(pair)
+
+        score = 0
+        action = "HOLD"
+
+        if ticker["volume_24h"] > 1000000:
+            score += 1
+
+        if score >= 1:
+            action = "BUY"
+
+        results.append({
+            "pair": pair,
+            "price": ticker["price"],
+            "volume_24h": ticker["volume_24h"],
+            "score": score,
+            "action": action
+        })
+
+    return jsonify({
+        "timestamp": datetime.utcnow().isoformat(),
+        "opportunities": results
+    })
+
+@app.route("/")
+def home():
+    return "Structured Alpha Engine Running"
