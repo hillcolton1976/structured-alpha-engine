@@ -3,89 +3,127 @@ const axios = require("axios");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-
 const BASE_URL = "https://api.kraken.com";
 
-// ---------- Coin Mapping ----------
-const COIN_INFO = {
-  XRPUSD: { name: "Ripple", symbol: "XRP" },
-  SOLUSD: { name: "Solana", symbol: "SOL" },
-  SHIBUSD: { name: "Shiba Inu", symbol: "SHIB" },
-  PEPEUSD: { name: "Pepe", symbol: "PEPE" },
-  XBTUSD: { name: "Bitcoin", symbol: "BTC" },
-  ETHUSD: { name: "Ethereum", symbol: "ETH" }
-};
+// ------------------ RSI CALCULATION ------------------
+function calculateRSI(closes, period = 14) {
+  if (closes.length <= period) return null;
 
-const SCAN_PAIRS = Object.keys(COIN_INFO);
+  let gains = 0;
+  let losses = 0;
 
-// ---------- Fetch Ticker ----------
-async function getTicker(pair) {
-  const response = await axios.get(
-    `${BASE_URL}/0/public/Ticker?pair=${pair}`
-  );
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains += diff;
+    else losses -= diff;
+  }
 
-  const key = Object.keys(response.data.result)[0];
-  return response.data.result[key];
+  const avgGain = gains / period;
+  const avgLoss = losses / period;
+
+  if (avgLoss === 0) return 100;
+
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
 }
 
-// ---------- Scoring Engine ----------
-function scoreAsset(price, volume24h, change24h) {
+// ------------------ SCORING SYSTEM ------------------
+function scoreAsset(data) {
   let score = 0;
 
+  const change = parseFloat(data.change_24h_percent);
+  const volume = parseFloat(data.volume_24h);
+  const rsi = data.rsi;
+
   // Volume strength
-  if (volume24h > 1_000_000) score += 2;
-  if (volume24h > 10_000_000) score += 2;
+  if (volume > 10000000) score += 2;
+  if (volume > 50000000) score += 2;
 
   // Momentum
-  if (change24h > 0) score += 1;
-  if (change24h > 2) score += 2;
-  if (change24h > 5) score += 3;
+  if (change > 0) score += 2;
+  if (change > 3) score += 2;
+  if (change < -3) score -= 2;
 
-  // Price tiers
-  if (price > 1) score += 1;
-  if (price > 10) score += 1;
+  // RSI logic
+  if (rsi && rsi < 35) score += 2; // oversold bounce
+  if (rsi && rsi > 70) score -= 2; // overbought
 
   return score;
 }
 
-// ---------- Routes ----------
+// ------------------ FETCH ALL USD PAIRS ------------------
+async function getUSDPairs() {
+  const response = await axios.get(`${BASE_URL}/0/public/AssetPairs`);
+  const pairs = response.data.result;
+
+  return Object.keys(pairs).filter(pair =>
+    pairs[pair].quote === "ZUSD"
+  );
+}
+
+// ------------------ FETCH TICKER ------------------
+async function getTicker(pair) {
+  const response = await axios.get(
+    `${BASE_URL}/0/public/Ticker?pair=${pair}`
+  );
+  const key = Object.keys(response.data.result)[0];
+  const ticker = response.data.result[key];
+
+  return {
+    price: parseFloat(ticker.c[0]),
+    volume_24h: parseFloat(ticker.v[1]),
+    change_24h_percent:
+      ((parseFloat(ticker.c[0]) - parseFloat(ticker.o)) /
+        parseFloat(ticker.o)) *
+      100
+  };
+}
+
+// ------------------ FETCH CANDLES ------------------
+async function getCandles(pair) {
+  const response = await axios.get(
+    `${BASE_URL}/0/public/OHLC?pair=${pair}&interval=60`
+  );
+
+  const key = Object.keys(response.data.result)[0];
+  const candles = response.data.result[key];
+
+  return candles.map(c => parseFloat(c[4])); // close prices
+}
+
+// ------------------ MAIN ROUTE ------------------
 app.get("/", (req, res) => {
-  res.send("Structured Alpha Public Market Scanner Running");
+  res.send("Structured Alpha Market Engine Running");
 });
 
-app.get("/signals", async (req, res) => {
+app.get("/scan", async (req, res) => {
   try {
+    const pairs = await getUSDPairs();
     const results = [];
 
-    for (let pair of SCAN_PAIRS) {
+    for (let pair of pairs.slice(0, 40)) { // limit to 40 for speed
       try {
         const ticker = await getTicker(pair);
+        const closes = await getCandles(pair);
+        const rsi = calculateRSI(closes);
 
-        const price = parseFloat(ticker.c[0]);
-        const volume = parseFloat(ticker.v[1]);
-        const open24h = parseFloat(ticker.o);
-        const change24h = ((price - open24h) / open24h) * 100;
+        const data = {
+          pair,
+          price: ticker.price,
+          volume_24h: ticker.volume_24h,
+          change_24h_percent: ticker.change_24h_percent.toFixed(2),
+          rsi: rsi ? rsi.toFixed(2) : null
+        };
 
-        const score = scoreAsset(price, volume, change24h);
+        const score = scoreAsset(data);
 
         let action = "HOLD";
-        if (score >= 8) action = "STRONG BUY";
-        else if (score >= 5) action = "BUY";
-        else if (score <= 2) action = "SELL";
+        if (score >= 6) action = "BUY";
+        if (score <= 1) action = "SELL";
 
-        results.push({
-          coin_name: COIN_INFO[pair].name,
-          symbol: COIN_INFO[pair].symbol,
-          pair,
-          price,
-          change_24h_percent: change24h.toFixed(2) + "%",
-          volume_24h: volume,
-          score,
-          action
-        });
-
-      } catch (err) {
-        // Skip invalid pairs
+        results.push({ ...data, score, action });
+      } catch (e) {
+        continue;
       }
     }
 
@@ -93,7 +131,8 @@ app.get("/signals", async (req, res) => {
 
     res.json({
       timestamp: new Date(),
-      ranked_opportunities: results
+      top_opportunities: results.slice(0, 10),
+      market_overview: results
     });
 
   } catch (error) {
