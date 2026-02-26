@@ -1,63 +1,24 @@
 const express = require("express");
 const axios = require("axios");
-const crypto = require("crypto");
-const qs = require("querystring");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-const API_KEY = process.env.KRAKEN_API_KEY;
-const API_SECRET = process.env.KRAKEN_API_SECRET;
-
 const BASE_URL = "https://api.kraken.com";
 
-// ---------- Utility: Kraken Signature ----------
-function getKrakenSignature(path, request, secret, nonce) {
-  const message = qs.stringify(request);
-  const secret_buffer = Buffer.from(secret, "base64");
-  const hash = crypto
-    .createHash("sha256")
-    .update(nonce + message)
-    .digest();
+// ---------- Coin Mapping ----------
+const COIN_INFO = {
+  XRPUSD: { name: "Ripple", symbol: "XRP" },
+  SOLUSD: { name: "Solana", symbol: "SOL" },
+  SHIBUSD: { name: "Shiba Inu", symbol: "SHIB" },
+  PEPEUSD: { name: "Pepe", symbol: "PEPE" },
+  XBTUSD: { name: "Bitcoin", symbol: "BTC" },
+  ETHUSD: { name: "Ethereum", symbol: "ETH" }
+};
 
-  const hmac = crypto
-    .createHmac("sha512", secret_buffer)
-    .update(path + hash)
-    .digest("base64");
+const SCAN_PAIRS = Object.keys(COIN_INFO);
 
-  return hmac;
-}
-
-// ---------- Fetch Portfolio ----------
-async function getBalances() {
-  const path = "/0/private/Balance";
-  const nonce = Date.now().toString();
-
-  const request = { nonce };
-
-  const signature = getKrakenSignature(
-    path,
-    request,
-    API_SECRET,
-    nonce
-  );
-
-  const response = await axios.post(
-    BASE_URL + path,
-    qs.stringify(request),
-    {
-      headers: {
-        "API-Key": API_KEY,
-        "API-Sign": signature,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-    }
-  );
-
-  return response.data.result;
-}
-
-// ---------- Fetch Market Data ----------
+// ---------- Fetch Ticker ----------
 async function getTicker(pair) {
   const response = await axios.get(
     `${BASE_URL}/0/public/Ticker?pair=${pair}`
@@ -67,92 +28,72 @@ async function getTicker(pair) {
   return response.data.result[key];
 }
 
-// ---------- Scoring Logic ----------
-function scoreAsset(price, volume) {
+// ---------- Scoring Engine ----------
+function scoreAsset(price, volume24h, change24h) {
   let score = 0;
 
-  if (volume > 1000000) score += 3;
+  // Volume strength
+  if (volume24h > 1_000_000) score += 2;
+  if (volume24h > 10_000_000) score += 2;
+
+  // Momentum
+  if (change24h > 0) score += 1;
+  if (change24h > 2) score += 2;
+  if (change24h > 5) score += 3;
+
+  // Price tiers
   if (price > 1) score += 1;
   if (price > 10) score += 1;
-  if (price > 100) score += 1;
 
   return score;
 }
 
 // ---------- Routes ----------
 app.get("/", (req, res) => {
-  res.send("Structured Alpha Portfolio Engine Running");
+  res.send("Structured Alpha Public Market Scanner Running");
 });
 
-app.get("/portfolio", async (req, res) => {
+app.get("/signals", async (req, res) => {
   try {
-    const balances = await getBalances();
+    const results = [];
 
-    const ownedAssets = Object.keys(balances)
-      .filter(asset => parseFloat(balances[asset]) > 0)
-      .filter(asset => asset !== "ZUSD");
-
-    const portfolioResults = [];
-
-    for (let asset of ownedAssets) {
-      const pair = asset + "USD";
-
+    for (let pair of SCAN_PAIRS) {
       try {
         const ticker = await getTicker(pair);
 
         const price = parseFloat(ticker.c[0]);
         const volume = parseFloat(ticker.v[1]);
-        const score = scoreAsset(price, volume);
+        const open24h = parseFloat(ticker.o);
+        const change24h = ((price - open24h) / open24h) * 100;
+
+        const score = scoreAsset(price, volume, change24h);
 
         let action = "HOLD";
-        if (score >= 5) action = "ADD";
-        if (score <= 2) action = "SELL";
+        if (score >= 8) action = "STRONG BUY";
+        else if (score >= 5) action = "BUY";
+        else if (score <= 2) action = "SELL";
 
-        portfolioResults.push({
-          asset,
-          balance: balances[asset],
-          price,
-          volume,
-          score,
-          recommendation: action
-        });
-
-      } catch (e) {
-        // skip invalid pairs
-      }
-    }
-
-    // ---------- Scan Market For Buys ----------
-    const scanPairs = [
-      "XRPUSD",
-      "SOLUSD",
-      "SHIBUSD",
-      "PEPEUSD"
-    ];
-
-    const buyOpportunities = [];
-
-    for (let pair of scanPairs) {
-      const ticker = await getTicker(pair);
-
-      const price = parseFloat(ticker.c[0]);
-      const volume = parseFloat(ticker.v[1]);
-      const score = scoreAsset(price, volume);
-
-      if (score >= 5) {
-        buyOpportunities.push({
+        results.push({
+          coin_name: COIN_INFO[pair].name,
+          symbol: COIN_INFO[pair].symbol,
           pair,
           price,
-          volume,
+          change_24h_percent: change24h.toFixed(2) + "%",
+          volume_24h: volume,
           score,
-          action: "BUY"
+          action
         });
+
+      } catch (err) {
+        // Skip invalid pairs
       }
     }
 
+    results.sort((a, b) => b.score - a.score);
+
     res.json({
-      portfolio_analysis: portfolioResults,
-      buy_opportunities: buyOpportunities
+      timestamp: new Date(),
+      ranked_opportunities: results
     });
 
   } catch (error) {
