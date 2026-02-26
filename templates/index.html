@@ -2,34 +2,24 @@
 <html>
 <head>
     <title>Long-Term Crypto Strength Scanner</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="refresh" content="600">
     <style>
         body {
-            margin: 0;
             font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #0f172a, #1e293b);
+            background: linear-gradient(to right, #0f2027, #203a43, #2c5364);
             color: white;
-        }
-
-        .container {
-            padding: 40px 20px;
-            max-width: 1000px;
-            margin: auto;
+            padding: 40px;
         }
 
         h1 {
-            color: #38bdf8;
-        }
-
-        .updated {
-            margin-bottom: 20px;
-            color: #94a3b8;
+            color: #4da3ff;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            background: rgba(255,255,255,0.05);
+            margin-top: 20px;
+            background-color: rgba(255,255,255,0.05);
             border-radius: 12px;
             overflow: hidden;
         }
@@ -40,81 +30,62 @@
         }
 
         th {
-            background: rgba(255,255,255,0.1);
+            background-color: rgba(255,255,255,0.1);
             letter-spacing: 1px;
         }
 
         tr:nth-child(even) {
-            background: rgba(255,255,255,0.03);
+            background-color: rgba(255,255,255,0.05);
         }
 
         .strong {
-            color: #22c55e;
+            color: #4CAF50;
             font-weight: bold;
         }
 
         .neutral {
-            color: #eab308;
+            color: #FFC107;
             font-weight: bold;
         }
 
         .weak {
-            color: #ef4444;
+            color: #F44336;
             font-weight: bold;
-        }
-
-        .section-title {
-            margin-top: 40px;
-            margin-bottom: 10px;
-            font-size: 20px;
-            color: #38bdf8;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>📈 Long-Term Crypto Strength Scanner</h1>
-        <div class="updated">Updated: {{ last_update }}</div>
 
-        <div class="section-title">Top 20 Strongest</div>
-        <table>
-            <tr>
-                <th>#</th>
-                <th>Pair</th>
-                <th>Price</th>
-                <th>Score</th>
-                <th>Strength</th>
-            </tr>
-            {% for coin in top %}
-            <tr>
-                <td>{{ loop.index }}</td>
-                <td>{{ coin.pair }}</td>
-                <td>${{ coin.price }}</td>
-                <td>{{ coin.score }}</td>
-                <td class="{{ coin.label.lower() }}">{{ coin.label }}</td>
-            </tr>
-            {% endfor %}
-        </table>
+<h1>📈 Long-Term Crypto Strength Scanner</h1>
+<p>Updated: {{ updated }}</p>
 
-        <div class="section-title">Bottom 20 Weakest</div>
-        <table>
-            <tr>
-                <th>#</th>
-                <th>Pair</th>
-                <th>Price</th>
-                <th>Score</th>
-                <th>Strength</th>
-            </tr>
-            {% for coin in bottom %}
-            <tr>
-                <td>{{ loop.index }}</td>
-                <td>{{ coin.pair }}</td>
-                <td>${{ coin.price }}</td>
-                <td>{{ coin.score }}</td>
-                <td class="{{ coin.label.lower() }}">{{ coin.label }}</td>
-            </tr>
-            {% endfor %}
-        </table>
-    </div>
+<table>
+    <tr>
+        <th>#</th>
+        <th>Pair</th>
+        <th>Price</th>
+        <th>Score</th>
+        <th>Strength</th>
+    </tr>
+
+    {% for m in markets %}
+    <tr>
+        <td>{{ loop.index }}</td>
+        <td>{{ m.pair }}</td>
+        <td>${{ m.price }}</td>
+        <td>{{ m.score }}</td>
+        <td class="
+            {% if m.strength == 'STRONG' %}strong
+            {% elif m.strength == 'NEUTRAL' %}neutral
+            {% else %}weak
+            {% endif %}
+        ">
+            {{ m.strength }}
+        </td>
+    </tr>
+    {% endfor %}
+
+</table>
+
 </body>
 </html>
