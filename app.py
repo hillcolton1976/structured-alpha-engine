@@ -9,18 +9,13 @@ from datetime import datetime
 app = Flask(__name__)
 
 KRAKEN_URL = "https://api.kraken.com/0/public"
-CACHE = {"data": [], "updated": None}
+CACHE = {"data": [], "updated": "Loading..."}
 
 
-# =========================
-# CLEAN SYMBOL FORMAT
-# =========================
 def clean_symbol(pair):
     pair = pair.replace("ZUSD", "").replace("USD", "")
     pair = pair.replace("XXBT", "BTC").replace("XBT", "BTC")
     pair = pair.replace("XETH", "ETH")
-    pair = pair.replace("XXRP", "XRP")
-    pair = pair.replace("XXDG", "DOGE")
 
     if pair.startswith("X") or pair.startswith("Z"):
         pair = pair[1:]
@@ -28,27 +23,21 @@ def clean_symbol(pair):
     return pair
 
 
-# =========================
-# GET USD PAIRS
-# =========================
 def get_usd_pairs():
     try:
         resp = requests.get(f"{KRAKEN_URL}/AssetPairs", timeout=10).json()
         pairs = []
 
-        for pair_name, data in resp["result"].items():
-            if data.get("quote") == "ZUSD" and ".d" not in pair_name:
-                pairs.append(pair_name)
+        for name, data in resp["result"].items():
+            if data.get("quote") == "ZUSD" and ".d" not in name:
+                pairs.append(name)
 
-        return pairs[:40]  # limit for speed
+        return pairs[:30]
 
     except:
         return []
 
 
-# =========================
-# GET DAILY CANDLES
-# =========================
 def get_daily_data(pair):
     try:
         resp = requests.get(
@@ -68,9 +57,6 @@ def get_daily_data(pair):
         return None
 
 
-# =========================
-# LONG TERM SCORE
-# =========================
 def calculate_score(closes):
     if len(closes) < 200:
         return 0
@@ -82,9 +68,6 @@ def calculate_score(closes):
     return round((ma50 - ma200) + momentum * 100, 4)
 
 
-# =========================
-# BUILD MARKET DATA
-# =========================
 def build_market():
     pairs = get_usd_pairs()
     markets = []
@@ -114,19 +97,19 @@ def build_market():
     return markets[:20]
 
 
-# =========================
-# BACKGROUND REFRESH LOOP
-# =========================
 def updater():
     while True:
-        CACHE["data"] = build_market()
-        CACHE["updated"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        try:
+            CACHE["data"] = build_market()
+            CACHE["updated"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        except:
+            CACHE["updated"] = "Error updating"
         time.sleep(60)
 
 
-# =========================
-# ROUTES
-# =========================
+threading.Thread(target=updater, daemon=True).start()
+
+
 @app.route("/")
 def home():
     return render_template("index.html")
@@ -138,12 +121,3 @@ def api_data():
         "updated": CACHE["updated"],
         "markets": CACHE["data"]
     })
-
-
-# =========================
-# START APP
-# =========================
-if __name__ == "__main__":
-    threading.Thread(target=updater, daemon=True).start()
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
