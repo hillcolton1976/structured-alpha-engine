@@ -2,9 +2,13 @@
 <html>
 <head>
     <title>Long-Term Crypto Strength</title>
+
+    <!-- Auto refresh -->
     <meta http-equiv="refresh" content="60">
+
     <style>
         body {
+            margin: 0;
             font-family: Arial, sans-serif;
             background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
             color: white;
@@ -12,14 +16,30 @@
         }
 
         h1 {
-            font-size: 40px;
-            margin-bottom: 10px;
+            color: #6ec1ff;
         }
 
         .updated {
-            margin-bottom: 30px;
-            opacity: 0.8;
+            margin-bottom: 20px;
+            color: #ccc;
         }
+
+        .buttons {
+            margin-bottom: 20px;
+        }
+
+        button {
+            padding: 10px 18px;
+            margin-right: 10px;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .buy-btn { background: #2ecc71; }
+        .sell-btn { background: #e74c3c; }
+        .all-btn { background: #3498db; }
 
         table {
             width: 100%;
@@ -30,7 +50,7 @@
         }
 
         th, td {
-            padding: 14px;
+            padding: 12px;
             text-align: center;
         }
 
@@ -39,54 +59,66 @@
         }
 
         tr:nth-child(even) {
-            background: rgba(255,255,255,0.03);
+            background: rgba(255,255,255,0.05);
         }
 
-        .strong {
-            color: #4caf50;
-            font-weight: bold;
-        }
-
-        .accumulation {
-            color: #ffc107;
-            font-weight: bold;
-        }
-
-        .weak {
-            color: #f44336;
-            font-weight: bold;
-        }
+        .STRONG { color: #2ecc71; font-weight: bold; }
+        .ACCUMULATION { color: #f1c40f; font-weight: bold; }
+        .WEAK { color: #e74c3c; font-weight: bold; }
     </style>
+
+    <script>
+        function filter(type) {
+            let rows = document.querySelectorAll("tbody tr");
+
+            rows.forEach(row => {
+                let strength = row.getAttribute("data-strength");
+
+                if (type === "BUY") {
+                    row.style.display = (strength === "STRONG" || strength === "ACCUMULATION") ? "" : "none";
+                } 
+                else if (type === "SELL") {
+                    row.style.display = (strength === "WEAK") ? "" : "none";
+                } 
+                else {
+                    row.style.display = "";
+                }
+            });
+        }
+    </script>
 </head>
 <body>
 
 <h1>📈 Long-Term Crypto Strength</h1>
-<div class="updated">Updated: {{ updated }}</div>
+<div class="updated">Updated: {{ now }}</div>
+
+<div class="buttons">
+    <button class="buy-btn" onclick="filter('BUY')">Buy Candidates</button>
+    <button class="sell-btn" onclick="filter('SELL')">Sell Candidates</button>
+    <button class="all-btn" onclick="filter('ALL')">Show All</button>
+</div>
 
 <table>
-    <tr>
-        <th>#</th>
-        <th>Coin</th>
-        <th>Price</th>
-        <th>Score</th>
-        <th>Strength</th>
-    </tr>
-
-    {% for coin in coins %}
-    <tr>
-        <td>{{ loop.index }}</td>
-        <td>{{ coin.coin }}</td>
-        <td>${{ coin.price }}</td>
-        <td>{{ coin.score }}</td>
-        <td class="
-            {% if coin.strength == 'STRONG' %}strong
-            {% elif coin.strength == 'ACCUMULATION' %}accumulation
-            {% else %}weak{% endif %}
-        ">
-            {{ coin.strength }}
-        </td>
-    </tr>
-    {% endfor %}
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Coin</th>
+            <th>Price</th>
+            <th>Score</th>
+            <th>Strength</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for coin in market %}
+        <tr data-strength="{{ coin.strength }}">
+            <td>{{ loop.index }}</td>
+            <td>{{ coin.coin }}</td>
+            <td>${{ coin.price }}</td>
+            <td>{{ coin.score }}</td>
+            <td class="{{ coin.strength }}">{{ coin.strength }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
 </table>
 
 </body>
