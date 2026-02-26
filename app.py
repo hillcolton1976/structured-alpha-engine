@@ -4,175 +4,160 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-KRAKEN_API = "https://api.kraken.com/0/public/Ticker"
+TICKER_API = "https://api.kraken.com/0/public/Ticker"
+ASSET_PAIRS_API = "https://api.kraken.com/0/public/AssetPairs"
 
-PAIRS = {
-    "XRP": "XRPUSD",
-    "SOL": "SOLUSD",
-    "PEPE": "PEPEUSD",
-    "SHIB": "SHIBUSD",
-    "COQ": "COQUSD"
-}
 
-def get_market_data():
-    pairs_string = ",".join(PAIRS.values())
-    response = requests.get(f"{KRAKEN_API}?pair={pairs_string}")
+# -------------------------
+# Get All USD Crypto Pairs
+# -------------------------
+def get_usd_pairs():
+    response = requests.get(ASSET_PAIRS_API)
     data = response.json().get("result", {})
 
+    usd_pairs = []
+
+    for pair_name, details in data.items():
+        if details.get("quote") == "ZUSD":
+            if details.get("wsname"):
+                usd_pairs.append(pair_name)
+
+    return usd_pairs
+
+
+# -------------------------
+# Scoring Engine
+# -------------------------
+def score_market():
+
+    pairs = get_usd_pairs()
+    batch_size = 20
     results = []
 
-    for coin, pair in PAIRS.items():
-        if pair not in data:
-            continue
+    for i in range(0, len(pairs), batch_size):
+        batch = pairs[i:i+batch_size]
+        pairs_string = ",".join(batch)
 
-        ticker = data[pair]
+        response = requests.get(f"{TICKER_API}?pair={pairs_string}")
+        data = response.json().get("result", {})
 
-        price = float(ticker["c"][0])
-        vwap_24h = float(ticker["p"][1])
-        volume_24h = float(ticker["v"][1])
-        low_24h = float(ticker["l"][1])
-        high_24h = float(ticker["h"][1])
+        for pair, ticker in data.items():
 
-        change_percent = ((price - vwap_24h) / vwap_24h) * 100
+            try:
+                price = float(ticker["c"][0])
+                vwap_24h = float(ticker["p"][1])
+                volume_24h = float(ticker["v"][1])
+                low_24h = float(ticker["l"][1])
+                high_24h = float(ticker["h"][1])
+            except:
+                continue
 
-        score = 0
+            change_percent = ((price - vwap_24h) / vwap_24h) * 100
+            range_position = (price - low_24h) / (high_24h - low_24h + 1e-9)
 
-        # Momentum
-        if change_percent > 2:
-            score += 2
-        elif change_percent < -2:
-            score -= 2
+            score = 0
 
-        # Trend
-        if price > vwap_24h:
-            score += 1
-        else:
-            score -= 1
+            # Momentum
+            if change_percent > 2:
+                score += 2
+            elif change_percent < -2:
+                score -= 2
 
-        # Range position
-        range_position = (price - low_24h) / (high_24h - low_24h + 1e-9)
-        if range_position > 0.75:
-            score += 1
-        elif range_position < 0.25:
-            score -= 1
+            # VWAP Trend
+            if price > vwap_24h:
+                score += 1
+            else:
+                score -= 1
 
-        # Volume boost
-        if volume_24h > 1_000_000:
-            score += 1
+            # Daily range position
+            if range_position > 0.75:
+                score += 1
+            elif range_position < 0.25:
+                score -= 1
 
-        # Signal mapping
-        if score >= 4:
-            action = "STRONG BUY"
-        elif score >= 2:
-            action = "BUY"
-        elif score <= -4:
-            action = "STRONG SELL"
-        elif score <= -2:
-            action = "SELL"
-        else:
-            action = "HOLD"
+            # Volume strength
+            if volume_24h > 1_000_000:
+                score += 1
 
-        results.append({
-            "coin": coin,
-            "price": price,
-            "change_24h_percent": round(change_percent, 2),
-            "volume_24h": volume_24h,
-            "score": score,
-            "action": action
-        })
+            # Action mapping
+            if score >= 4:
+                action = "STRONG BUY"
+            elif score >= 2:
+                action = "BUY"
+            elif score <= -4:
+                action = "STRONG SELL"
+            elif score <= -2:
+                action = "SELL"
+            else:
+                action = "HOLD"
 
-    return sorted(results, key=lambda x: x["score"], reverse=True)
+            results.append({
+                "pair": pair,
+                "price": price,
+                "change": round(change_percent, 2),
+                "score": score,
+                "action": action
+            })
+
+    return results
 
 
+# -------------------------
+# Route
+# -------------------------
 @app.route("/")
 def home():
-    market = get_market_data()
+
+    market = score_market()
+
+    # Sort by strongest score first
+    market_sorted = sorted(market, key=lambda x: x["score"], reverse=True)
+
+    top_30 = market_sorted[:30]
+    all_sells = [m for m in market if m["action"] in ["SELL", "STRONG SELL"]]
 
     html = """
-    <html>
-    <head>
-        <title>Crypto Signal Engine</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <meta http-equiv="refresh" content="30">
-        <style>
-            body {
-                font-family: Arial;
-                background:#0f1117;
-                color:white;
-                margin:0;
-                padding:20px;
-                text-align:center;
-            }
-            table {
-                width:100%;
-                max-width:1000px;
-                margin:auto;
-                border-collapse: collapse;
-                background:#161b22;
-            }
-            th, td {
-                padding:14px;
-                border-bottom:1px solid #222;
-            }
-            th { background:#1f2937; }
-            tr:hover { background:#1c2128; }
+    <h1>🚀 Kraken Market Scanner</h1>
+    <p>Updated: {{ time }}</p>
 
-            .positive { color:#00ff88; font-weight:bold; }
-            .negative { color:#ff4d4d; font-weight:bold; }
-            .neutral  { color:#ffaa00; font-weight:bold; }
+    <h2>🔥 Top 30 Strongest</h2>
+    <table border=1 cellpadding=6>
+    <tr>
+        <th>Pair</th><th>Price</th><th>24h %</th><th>Score</th><th>Action</th>
+    </tr>
+    {% for coin in top %}
+    <tr>
+        <td>{{ coin.pair }}</td>
+        <td>{{ coin.price }}</td>
+        <td>{{ coin.change }}%</td>
+        <td>{{ coin.score }}</td>
+        <td>{{ coin.action }}</td>
+    </tr>
+    {% endfor %}
+    </table>
 
-            .strongbuy { background:#003d1f; }
-            .buy { background:#002a15; }
-            .sell { background:#2a0000; }
-            .strongsell { background:#3d0000; }
-        </style>
-    </head>
-    <body>
-
-        <h1>🚀 Crypto Signal Engine</h1>
-        <p>Updated: {{timestamp}}</p>
-        <p>Auto refresh every 30 seconds</p>
-
-        <table>
-            <tr>
-                <th>Rank</th>
-                <th>Coin</th>
-                <th>Price</th>
-                <th>24h %</th>
-                <th>Volume</th>
-                <th>Score</th>
-                <th>Action</th>
-            </tr>
-
-            {% for item in market %}
-            <tr class="{{item.action.lower().replace(' ','')}}">
-                <td>{{loop.index}}</td>
-                <td>{{item.coin}}</td>
-                <td>${{item.price}}</td>
-
-                <td class="{% if item.change_24h_percent > 0 %}positive{% elif item.change_24h_percent < 0 %}negative{% else %}neutral{% endif %}">
-                    {{item.change_24h_percent}}%
-                </td>
-
-                <td>{{"{:,.0f}".format(item.volume_24h)}}</td>
-
-                <td class="{% if item.score > 0 %}positive{% elif item.score < 0 %}negative{% else %}neutral{% endif %}">
-                    {{item.score}}
-                </td>
-
-                <td><strong>{{item.action}}</strong></td>
-            </tr>
-            {% endfor %}
-        </table>
-
-    </body>
-    </html>
+    <h2>📉 All SELL Signals</h2>
+    <table border=1 cellpadding=6>
+    <tr>
+        <th>Pair</th><th>Price</th><th>24h %</th><th>Score</th><th>Action</th>
+    </tr>
+    {% for coin in sells %}
+    <tr>
+        <td>{{ coin.pair }}</td>
+        <td>{{ coin.price }}</td>
+        <td>{{ coin.change }}%</td>
+        <td>{{ coin.score }}</td>
+        <td>{{ coin.action }}</td>
+    </tr>
+    {% endfor %}
+    </table>
     """
 
     return render_template_string(
         html,
-        market=market,
-        timestamp=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        time=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        top=top_30,
+        sells=all_sells
     )
 
 
