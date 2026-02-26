@@ -1,145 +1,141 @@
-const express = require("express");
-const axios = require("axios");
+import requests
+import pandas as pd
+import numpy as np
+from flask import Flask, jsonify
+from datetime import datetime
 
-const app = express();
-const PORT = process.env.PORT || 8080;
-const BASE_URL = "https://api.kraken.com";
+app = Flask(__name__)
 
-// ------------------ RSI CALCULATION ------------------
-function calculateRSI(closes, period = 14) {
-  if (closes.length <= period) return null;
+KRAKEN_API = "https://api.kraken.com/0/public"
 
-  let gains = 0;
-  let losses = 0;
+########################################
+# GET ALL USD PAIRS FROM KRAKEN
+########################################
+def get_usd_pairs():
+    url = f"{KRAKEN_API}/AssetPairs"
+    res = requests.get(url).json()
 
-  for (let i = closes.length - period; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses -= diff;
-  }
+    pairs = []
+    for pair, data in res["result"].items():
+        if "USD" in data.get("quote", "") and data.get("status") == "online":
+            pairs.append(pair)
 
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
+    return pairs
 
-  if (avgLoss === 0) return 100;
 
-  const rs = avgGain / avgLoss;
-  return 100 - (100 / (1 + rs));
-}
+########################################
+# GET OHLC DATA
+########################################
+def get_ohlc(pair):
+    url = f"{KRAKEN_API}/OHLC?pair={pair}&interval=60"
+    res = requests.get(url).json()
 
-// ------------------ SCORING SYSTEM ------------------
-function scoreAsset(data) {
-  let score = 0;
+    if "error" in res and len(res["error"]) > 0:
+        return None
 
-  const change = parseFloat(data.change_24h_percent);
-  const volume = parseFloat(data.volume_24h);
-  const rsi = data.rsi;
+    data_key = list(res["result"].keys())[0]
+    df = pd.DataFrame(res["result"][data_key])
+    df.columns = ["time","open","high","low","close","vwap","volume","count"]
 
-  // Volume strength
-  if (volume > 10000000) score += 2;
-  if (volume > 50000000) score += 2;
+    df["close"] = df["close"].astype(float)
+    df["volume"] = df["volume"].astype(float)
 
-  // Momentum
-  if (change > 0) score += 2;
-  if (change > 3) score += 2;
-  if (change < -3) score -= 2;
+    return df
 
-  // RSI logic
-  if (rsi && rsi < 35) score += 2; // oversold bounce
-  if (rsi && rsi > 70) score -= 2; // overbought
 
-  return score;
-}
+########################################
+# RSI CALCULATION
+########################################
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
-// ------------------ FETCH ALL USD PAIRS ------------------
-async function getUSDPairs() {
-  const response = await axios.get(`${BASE_URL}/0/public/AssetPairs`);
-  const pairs = response.data.result;
 
-  return Object.keys(pairs).filter(pair =>
-    pairs[pair].quote === "ZUSD"
-  );
-}
+########################################
+# SCORE FUNCTION
+########################################
+def score_coin(df):
+    if df is None or len(df) < 20:
+        return None
 
-// ------------------ FETCH TICKER ------------------
-async function getTicker(pair) {
-  const response = await axios.get(
-    `${BASE_URL}/0/public/Ticker?pair=${pair}`
-  );
-  const key = Object.keys(response.data.result)[0];
-  const ticker = response.data.result[key];
+    df["rsi"] = calculate_rsi(df["close"])
 
-  return {
-    price: parseFloat(ticker.c[0]),
-    volume_24h: parseFloat(ticker.v[1]),
-    change_24h_percent:
-      ((parseFloat(ticker.c[0]) - parseFloat(ticker.o)) /
-        parseFloat(ticker.o)) *
-      100
-  };
-}
+    latest = df.iloc[-1]
+    previous = df.iloc[-2]
 
-// ------------------ FETCH CANDLES ------------------
-async function getCandles(pair) {
-  const response = await axios.get(
-    `${BASE_URL}/0/public/OHLC?pair=${pair}&interval=60`
-  );
+    price = latest["close"]
+    volume = latest["volume"]
+    rsi = latest["rsi"]
 
-  const key = Object.keys(response.data.result)[0];
-  const candles = response.data.result[key];
+    change = ((latest["close"] - previous["close"]) / previous["close"]) * 100
 
-  return candles.map(c => parseFloat(c[4])); // close prices
-}
+    score = 0
 
-// ------------------ MAIN ROUTE ------------------
-app.get("/", (req, res) => {
-  res.send("Structured Alpha Market Engine Running");
-});
+    # Momentum
+    if change > 1:
+        score += 2
+    if change > 3:
+        score += 2
 
-app.get("/scan", async (req, res) => {
-  try {
-    const pairs = await getUSDPairs();
-    const results = [];
+    # Volume spike
+    avg_vol = df["volume"].rolling(10).mean().iloc[-1]
+    if volume > avg_vol * 1.5:
+        score += 2
 
-    for (let pair of pairs.slice(0, 40)) { // limit to 40 for speed
-      try {
-        const ticker = await getTicker(pair);
-        const closes = await getCandles(pair);
-        const rsi = calculateRSI(closes);
+    # RSI sweet spot
+    if 45 < rsi < 70:
+        score += 2
 
-        const data = {
-          pair,
-          price: ticker.price,
-          volume_24h: ticker.volume_24h,
-          change_24h_percent: ticker.change_24h_percent.toFixed(2),
-          rsi: rsi ? rsi.toFixed(2) : null
-        };
+    # Oversold bounce
+    if rsi < 30:
+        score += 1
 
-        const score = scoreAsset(data);
+    action = "HOLD"
+    if score >= 6:
+        action = "BUY"
+    elif score <= 2:
+        action = "SELL"
 
-        let action = "HOLD";
-        if (score >= 6) action = "BUY";
-        if (score <= 1) action = "SELL";
-
-        results.push({ ...data, score, action });
-      } catch (e) {
-        continue;
-      }
+    return {
+        "price": round(price, 6),
+        "change_1h_percent": round(change, 2),
+        "volume": round(volume, 2),
+        "rsi": round(rsi, 2),
+        "score": score,
+        "action": action
     }
 
-    results.sort((a, b) => b.score - a.score);
 
-    res.json({
-      timestamp: new Date(),
-      top_opportunities: results.slice(0, 10),
-      market_overview: results
-    });
+########################################
+# MAIN ROUTE
+########################################
+@app.route("/signals")
+def signals():
 
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+    pairs = get_usd_pairs()
+    results = []
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+    for pair in pairs:
+        try:
+            df = get_ohlc(pair)
+            scored = score_coin(df)
+            if scored:
+                scored["pair"] = pair
+                results.append(scored)
+        except:
+            continue
+
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
+
+    return jsonify({
+        "timestamp": datetime.utcnow().isoformat(),
+        "top_opportunities": results[:20]
+    })
+
+
+########################################
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
