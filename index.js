@@ -26,10 +26,9 @@ app.get("/signals", async (req, res) => {
 
       let score = 0;
 
-      // Real logic (simple but consistent)
-      if (volume > 1000000) score += 3;     // strong volume
-      if (price > 50) score += 2;           // higher priced asset
-      if (price > 1000) score += 2;         // premium asset tier
+      if (volume > 1000000) score += 3;
+      if (price > 50) score += 2;
+      if (price > 1000) score += 2;
 
       let action = "HOLD";
       if (score >= 6) action = "BUY";
@@ -52,19 +51,6 @@ app.get("/signals", async (req, res) => {
 
   } catch (error) {
     res.status(500).json({ error: error.message });
-  }
-});
-    }
-
-    results.sort((a, b) => b.score - a.score);
-
-    res.json({
-      best_trade: results[0],
-      all_pairs: results
-    });
-
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch market data" });
   }
 });
 
