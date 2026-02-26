@@ -1,140 +1,131 @@
 import requests
-import threading
-import time
 from flask import Flask, render_template
 from datetime import datetime
+import statistics
 
 app = Flask(__name__)
 
-KRAKEN_TICKER_URL = "https://api.kraken.com/0/public/Ticker"
-KRAKEN_ASSETS_URL = "https://api.kraken.com/0/public/AssetPairs"
+KRAKEN_URL = "https://api.kraken.com/0/public"
 
-cached_data = {
-    "top": [],
-    "bottom": [],
-    "last_update": "Loading..."
-}
+# ==============================
+# CLEAN SYMBOL FORMATTER
+# ==============================
+def clean_symbol(pair):
+    pair = pair.replace("ZUSD", "").replace("USD", "")
 
-# ----------------------------
-# MARKET SCORING LOGIC
-# ----------------------------
+    mapping = {
+        "XXBT": "BTC",
+        "XBT": "BTC",
+        "XETH": "ETH",
+        "XXDG": "DOGE",
+        "XXRP": "XRP",
+        "XADA": "ADA",
+        "XLTC": "LTC"
+    }
 
-def get_all_usd_pairs():
-    response = requests.get(KRAKEN_ASSETS_URL, timeout=10).json()
-    pairs = response.get("result", {})
-    usd_pairs = []
+    if pair in mapping:
+        return mapping[pair]
 
-    for pair_name, pair_info in pairs.items():
-        if pair_info.get("quote") == "ZUSD":
-            usd_pairs.append(pair_name)
+    if pair.startswith("X") or pair.startswith("Z"):
+        pair = pair[1:]
 
-    return usd_pairs
+    return pair
 
 
-def get_price(pair):
-    try:
-        response = requests.get(
-            KRAKEN_TICKER_URL,
-            params={"pair": pair},
-            timeout=10
-        ).json()
+# ==============================
+# GET USD PAIRS
+# ==============================
+def get_usd_pairs():
+    resp = requests.get(f"{KRAKEN_URL}/AssetPairs").json()
+    pairs = []
 
-        result = response.get("result", {})
-        if not result:
-            return None
+    for pair_name, data in resp["result"].items():
+        if data.get("quote") == "ZUSD" and ".d" not in pair_name:
+            pairs.append(pair_name)
 
-        pair_data = list(result.values())[0]
-        return float(pair_data["c"][0])  # last trade price
-    except:
+    return pairs
+
+
+# ==============================
+# GET DAILY CANDLES
+# ==============================
+def get_daily_data(pair):
+    resp = requests.get(
+        f"{KRAKEN_URL}/OHLC",
+        params={"pair": pair, "interval": 1440}
+    ).json()
+
+    if resp["error"]:
         return None
 
+    candles = resp["result"][pair]
+    closes = [float(c[4]) for c in candles]
 
-def score_market():
-    pairs = get_all_usd_pairs()
-
-    btc_price = get_price("XXBTZUSD")
-    if not btc_price:
-        return [], []
-
-    market_scores = []
-
-    for pair in pairs:
-        if pair == "XXBTZUSD":
-            continue
-
-        price = get_price(pair)
-        if not price:
-            continue
-
-        relative_strength = (price / btc_price) * 100
-
-        if relative_strength > 1:
-            label = "STRONG"
-        elif relative_strength > 0.5:
-            label = "NEUTRAL"
-        else:
-            label = "WEAK"
-
-        market_scores.append({
-            "pair": pair,
-            "price": round(price, 6),
-            "score": round(relative_strength, 4),
-            "label": label
-        })
-
-    # Sort strongest first
-    market_scores.sort(key=lambda x: x["score"], reverse=True)
-
-    top = market_scores[:20]
-    bottom = market_scores[-20:]
-
-    return top, bottom
+    return closes
 
 
-# ----------------------------
-# UPDATE LOOP
-# ----------------------------
+# ==============================
+# LONG TERM SCORE
+# ==============================
+def calculate_score(closes):
+    if len(closes) < 200:
+        return 0
 
-def update_market():
-    try:
-        top, bottom = score_market()
-        cached_data["top"] = top
-        cached_data["bottom"] = bottom
-        cached_data["last_update"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    except Exception as e:
-        print("Update error:", e)
+    ma50 = statistics.mean(closes[-50:])
+    ma200 = statistics.mean(closes[-200:])
 
+    momentum = (closes[-1] - closes[-30]) / closes[-30]
 
-def background_updater():
-    while True:
-        update_market()
-        time.sleep(600)  # every 10 minutes
+    score = (ma50 - ma200) + momentum * 100
+    return round(score, 4)
 
 
-# Run once immediately
-update_market()
-
-# Start background updates
-threading.Thread(target=background_updater, daemon=True).start()
-
-
-# ----------------------------
-# ROUTES
-# ----------------------------
-
+# ==============================
+# MAIN ROUTE
+# ==============================
 @app.route("/")
 def home():
-    return render_template(
-        "index.html",
-        top=cached_data["top"],
-        bottom=cached_data["bottom"],
-        last_update=cached_data["last_update"]
-    )
+    pairs = get_usd_pairs()
+    markets = []
+
+    for pair in pairs:
+        try:
+            closes = get_daily_data(pair)
+            if not closes:
+                continue
+
+            score = calculate_score(closes)
+
+            if score > 2:
+                strength = "STRONG"
+            elif score > 0:
+                strength = "NEUTRAL"
+            else:
+                strength = "WEAK"
+
+            markets.append({
+                "pair": clean_symbol(pair),
+                "price": round(closes[-1], 2),
+                "score": score,
+                "strength": strength
+            })
+
+        except:
+            continue
+
+    # Sort strongest first
+    markets = sorted(markets, key=lambda x: x["score"], reverse=True)
+
+    # Only show top 20
+    markets = markets[:20]
+
+    updated = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+    return render_template("index.html", markets=markets, updated=updated)
 
 
-# ----------------------------
-# START SERVER
-# ----------------------------
-
+# ==============================
+# RUN APP
+# ==============================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
