@@ -1,122 +1,93 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Long-Term Crypto Scanner</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Long-Term Crypto Strength</title>
     <meta http-equiv="refresh" content="60">
 
     <style>
         body {
-            margin: 0;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: #0f172a;
+            background-color: #0f172a;
             color: #f1f5f9;
-        }
-
-        .container {
-            max-width: 1000px;
-            margin: auto;
-            padding: 20px;
+            font-family: Arial, sans-serif;
+            padding: 30px;
         }
 
         h1 {
-            text-align: center;
-            margin-bottom: 10px;
+            color: #38bdf8;
         }
 
         .updated {
-            text-align: center;
-            font-size: 14px;
             color: #94a3b8;
-            margin-bottom: 25px;
+            margin-bottom: 20px;
         }
 
         table {
-            width: 100%;
             border-collapse: collapse;
-            background: #1e293b;
-            border-radius: 10px;
-            overflow: hidden;
+            width: 100%;
+            background-color: #1e293b;
+        }
+
+        th, td {
+            padding: 10px;
+            text-align: left;
         }
 
         th {
-            background: #334155;
-            padding: 12px;
-            text-align: left;
-            font-size: 14px;
+            background-color: #334155;
         }
 
-        td {
-            padding: 12px;
-            border-bottom: 1px solid #334155;
-            font-size: 14px;
+        tr:nth-child(even) {
+            background-color: #1e293b;
         }
 
         tr:hover {
-            background: #24344d;
+            background-color: #334155;
         }
 
-        .badge {
-            padding: 5px 10px;
-            border-radius: 20px;
-            font-weight: bold;
-            font-size: 12px;
-        }
-
-        .elite { background: #16a34a; }
-        .strong { background: #22c55e; }
-        .building { background: #eab308; color: #000; }
-        .weak { background: #f97316; }
-        .avoid { background: #ef4444; }
-
-        @media (max-width: 600px) {
-            th, td {
-                font-size: 12px;
-                padding: 8px;
-            }
-        }
+        .elite { color: #22c55e; font-weight: bold; }
+        .strong { color: #38bdf8; }
+        .building { color: #facc15; }
+        .weak { color: #f97316; }
+        .avoid { color: #ef4444; }
     </style>
 </head>
-
 <body>
-    <div class="container">
-        <h1>📈 Long-Term Crypto Strength Scanner</h1>
-        <div class="updated">
-            Updated: {{ now }}
-        </div>
 
-        <table>
-            <tr>
-                <th>Rank</th>
-                <th>Pair</th>
-                <th>Price</th>
-                <th>Score</th>
-                <th>Strength</th>
-            </tr>
+<h1>📈 Long-Term Crypto Strength Scanner</h1>
+<div class="updated">Updated: {{ now }}</div>
 
-            {% for coin in market %}
-            <tr>
-                <td>{{ loop.index }}</td>
-                <td>{{ coin.pair }}</td>
-                <td>${{ coin.price }}</td>
-                <td>{{ coin.score }}</td>
-                <td>
-                    {% if coin.score >= 4 %}
-                        <span class="badge elite">🔥 Elite Trend</span>
-                    {% elif coin.score == 3 %}
-                        <span class="badge strong">💪 Strong</span>
-                    {% elif coin.score == 2 %}
-                        <span class="badge building">👍 Building</span>
-                    {% elif coin.score == 1 %}
-                        <span class="badge weak">⚠ Weak</span>
-                    {% else %}
-                        <span class="badge avoid">❌ Avoid</span>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </table>
+<table>
+<tr>
+    <th>Rank</th>
+    <th>Pair</th>
+    <th>Price</th>
+    <th>Score</th>
+    <th>Strength</th>
+</tr>
 
-    </div>
+{% for coin in market %}
+<tr>
+    <td>{{ loop.index }}</td>
+    <td>{{ coin.pair }}</td>
+    <td>${{ coin.price }}</td>
+    <td>{{ coin.score }}</td>
+    <td>
+        {% if coin.score >= 4 %}
+            <span class="elite">ELITE</span>
+        {% elif coin.score == 3 %}
+            <span class="strong">STRONG</span>
+        {% elif coin.score == 2 %}
+            <span class="building">BUILDING</span>
+        {% elif coin.score == 1 %}
+            <span class="weak">WEAK</span>
+        {% else %}
+            <span class="avoid">AVOID</span>
+        {% endif %}
+    </td>
+</tr>
+{% endfor %}
+
+</table>
+
 </body>
 </html>
