@@ -1,64 +1,108 @@
 from flask import Flask, render_template
 import requests
+import statistics
 from datetime import datetime
 
 app = Flask(__name__)
 
-KRAKEN_URL = "https://api.kraken.com/0/public/Ticker"
+KRAKEN_TICKER = "https://api.kraken.com/0/public/Ticker"
+KRAKEN_OHLC = "https://api.kraken.com/0/public/OHLC"
+KRAKEN_PAIRS = "https://api.kraken.com/0/public/AssetPairs"
 
-# Coins we want to track
-COINS = [
-    "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD",
-    "ADAUSD", "DOTUSD", "LINKUSD",
-    "AVAXUSD", "LTCUSD", "BCHUSD"
-]
 
+# -------- CLEAN SYMBOL --------
 def clean_symbol(pair):
-    return pair.replace("USD", "").replace("XBT", "BTC")
+    pair = pair.replace("ZUSD", "")
+    pair = pair.replace("USD", "")
+    pair = pair.replace("XBT", "BTC")
 
-def get_market_data():
+    if pair.startswith("X") or pair.startswith("Z"):
+        pair = pair[1:]
+
+    return pair
+
+
+# -------- GET USD PAIRS --------
+def get_usd_pairs():
+    data = requests.get(KRAKEN_PAIRS, timeout=10).json()
+    pairs = []
+
+    for pair, info in data["result"].items():
+        if info.get("quote") == "ZUSD":
+            pairs.append(pair)
+
+    return pairs[:25]  # limit for stability
+
+
+# -------- SMART LONG TERM SCORE --------
+def score_market(pair):
     try:
-        pairs = ",".join(COINS)
-        response = requests.get(f"{KRAKEN_URL}?pair={pairs}", timeout=10)
-        data = response.json()["result"]
+        # Current price
+        ticker = requests.get(KRAKEN_TICKER, params={"pair": pair}, timeout=10).json()
+        price = float(list(ticker["result"].values())[0]["c"][0])
 
-        market = []
+        # 30-day daily candles
+        ohlc = requests.get(
+            KRAKEN_OHLC,
+            params={"pair": pair, "interval": 1440},
+            timeout=10
+        ).json()
 
-        for pair in data:
-            price = float(data[pair]["c"][0])
-            vwap = float(data[pair]["p"][1]) if float(data[pair]["p"][1]) != 0 else price
+        candles = list(ohlc["result"].values())[0][-30:]
+        closes = [float(c[4]) for c in candles]
 
-            # Long-term strength logic
-            score = ((price - vwap) / vwap) * 100
+        if len(closes) < 15:
+            return None
 
-            if score > 5:
-                strength = "STRONG"
-            elif score > -5:
-                strength = "ACCUMULATION"
-            else:
-                strength = "WEAK"
+        sma = sum(closes) / len(closes)
+        trend = ((closes[-1] - closes[0]) / closes[0]) * 100
+        position = ((price - sma) / sma) * 100
+        volatility = statistics.stdev(closes)
 
-            market.append({
-                "coin": clean_symbol(pair),
-                "price": round(price, 2),
-                "score": round(score, 2),
-                "strength": strength
-            })
+        score = trend + position - ((volatility / price) * 50)
 
-        # Sort strongest first
-        market.sort(key=lambda x: x["score"], reverse=True)
+        if score > 15:
+            strength = "STRONG"
+        elif score > 0:
+            strength = "ACCUMULATION"
+        else:
+            strength = "WEAK"
 
-        return market
+        return {
+            "coin": clean_symbol(pair),
+            "price": round(price, 2),
+            "score": round(score, 2),
+            "strength": strength
+        }
 
-    except Exception as e:
-        print("ERROR:", e)
-        return []
+    except:
+        return None
 
+
+# -------- HOME --------
 @app.route("/")
 def home():
-    market = get_market_data()
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    return render_template("index.html", market=market, now=now)
+    pairs = get_usd_pairs()
+    results = []
+
+    for pair in pairs:
+        result = score_market(pair)
+        if result:
+            results.append(result)
+
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
+
+    buy_list = [c for c in results if c["strength"] in ["STRONG", "ACCUMULATION"]]
+    sell_list = [c for c in results if c["strength"] == "WEAK"]
+
+    return render_template(
+        "index.html",
+        coins=results,
+        buy_list=buy_list,
+        sell_list=sell_list,
+        updated=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    )
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
