@@ -1,103 +1,135 @@
-import requests
 from flask import Flask, render_template
+import requests
 from datetime import datetime
+import time
 
 app = Flask(__name__)
 
-KRAKEN_TICKER_URL = "https://api.kraken.com/0/public/Ticker"
-KRAKEN_ASSETS_URL = "https://api.kraken.com/0/public/AssetPairs"
+KRAKEN_ASSETS = "https://api.kraken.com/0/public/AssetPairs"
+KRAKEN_TICKER = "https://api.kraken.com/0/public/Ticker"
 
-# --------------------------------------------------
-# Get all USD trading pairs
-# --------------------------------------------------
+# Simple in-memory cache (avoids API spam + timeouts)
+CACHE = {
+    "data": None,
+    "last_update": 0
+}
+
+CACHE_SECONDS = 60  # refresh once per minute
+
+
+# ----------------------------
+# Get all USD pairs
+# ----------------------------
 def get_usd_pairs():
-    try:
-        response = requests.get(KRAKEN_ASSETS_URL, timeout=10).json()
-        pairs = []
+    response = requests.get(KRAKEN_ASSETS, timeout=10).json()
+    result = response.get("result", {})
 
-        for pair_name, pair_data in response["result"].items():
-            if pair_data.get("quote") == "ZUSD":
-                pairs.append(pair_name)
+    pairs = []
+    for pair, details in result.items():
+        if details.get("quote") == "ZUSD":
+            pairs.append(pair)
 
-        return pairs
+    return pairs
 
-    except Exception as e:
-        print("Error getting pairs:", e)
-        return []
 
-# --------------------------------------------------
-# Long-Term Strength Scoring (6–8 Month Trend)
-# --------------------------------------------------
-def score_market(pair):
-    try:
-        response = requests.get(
-            KRAKEN_TICKER_URL,
-            params={"pair": pair},
-            timeout=10
-        ).json()
+# ----------------------------
+# Fetch ALL tickers at once
+# ----------------------------
+def fetch_all_tickers(pairs):
+    pair_string = ",".join(pairs)
 
-        data = response["result"][list(response["result"].keys())[0]]
+    response = requests.get(
+        KRAKEN_TICKER,
+        params={"pair": pair_string},
+        timeout=15
+    ).json()
 
-        price = float(data["c"][0])       # last trade
-        vwap_24h = float(data["p"][1])    # 24h VWAP
-        high_24h = float(data["h"][1])    # 24h high
-        low_24h = float(data["l"][1])     # 24h low
-        volume_24h = float(data["v"][1])  # 24h volume
+    return response.get("result", {})
 
-        if vwap_24h == 0:
-            return None
+
+# ----------------------------
+# Scoring engine
+# ----------------------------
+def score_market():
+
+    # Use cache
+    if time.time() - CACHE["last_update"] < CACHE_SECONDS:
+        return CACHE["data"]
+
+    pairs = get_usd_pairs()
+    tickers = fetch_all_tickers(pairs)
+
+    market = []
+
+    for pair, ticker in tickers.items():
+        try:
+            price = float(ticker["c"][0])
+            vwap = float(ticker["p"][1])
+            volume = float(ticker["v"][1])
+            low = float(ticker["l"][1])
+            high = float(ticker["h"][1])
+
+            if vwap == 0 or high == low:
+                continue
+
+        except:
+            continue
+
+        change_percent = ((price - vwap) / vwap) * 100
+        range_position = (price - low) / (high - low)
 
         score = 0
 
-        # Price above VWAP
-        if price > vwap_24h:
+        # Momentum (mild for longer-term)
+        if change_percent > 3:
+            score += 2
+        elif change_percent > 1:
+            score += 1
+        elif change_percent < -3:
+            score -= 2
+
+        # Above VWAP
+        if price > vwap:
             score += 1
 
-        # Strong daily range (momentum)
-        if (high_24h - low_24h) > (low_24h * 0.05):
+        # Near top of range
+        if range_position > 0.7:
             score += 1
 
-        # High relative position in range
-        if price > (low_24h + (high_24h - low_24h) * 0.6):
+        # Strong liquidity
+        if volume > 5_000_000:
             score += 1
 
-        # Good liquidity (avoid dead coins)
-        if volume_24h > 100000:
-            score += 1
-
-        return {
+        market.append({
             "pair": pair,
-            "price": round(price, 6),
+            "price": round(price, 4),
             "score": score
-        }
-
-    except Exception as e:
-        print("Error scoring", pair, e)
-        return None
-
-# --------------------------------------------------
-# Home Route
-# --------------------------------------------------
-@app.route("/")
-def home():
-    pairs = get_usd_pairs()
-    market = []
-
-    for pair in pairs:
-        result = score_market(pair)
-        if result:
-            market.append(result)
+        })
 
     # Sort strongest first
-    market = sorted(market, key=lambda x: x["score"], reverse=True)
+    market_sorted = sorted(market, key=lambda x: x["score"], reverse=True)
+
+    # Cache result
+    CACHE["data"] = market_sorted[:50]
+    CACHE["last_update"] = time.time()
+
+    return CACHE["data"]
+
+
+# ----------------------------
+# Route
+# ----------------------------
+@app.route("/")
+def home():
+
+    market = score_market()
 
     return render_template(
         "index.html",
         market=market,
-        now=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        now=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     )
 
-# --------------------------------------------------
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
