@@ -9,20 +9,22 @@ ASSET_PAIRS_API = "https://api.kraken.com/0/public/AssetPairs"
 
 
 # -------------------------
-# Get All USD Crypto Pairs
+# Get USD Crypto Pairs (LIMITED)
 # -------------------------
-def get_usd_pairs():
-    response = requests.get(ASSET_PAIRS_API)
-    data = response.json().get("result", {})
+def get_usd_pairs(limit=120):
+    try:
+        response = requests.get(ASSET_PAIRS_API, timeout=10)
+        data = response.json().get("result", {})
+    except:
+        return []
 
     usd_pairs = []
 
     for pair_name, details in data.items():
         if details.get("quote") == "ZUSD":
-            if details.get("wsname"):
-                usd_pairs.append(pair_name)
+            usd_pairs.append(pair_name)
 
-    return usd_pairs
+    return usd_pairs[:limit]   # LIMIT TO SAFE SIZE
 
 
 # -------------------------
@@ -35,11 +37,18 @@ def score_market():
     results = []
 
     for i in range(0, len(pairs), batch_size):
+
         batch = pairs[i:i+batch_size]
         pairs_string = ",".join(batch)
 
-        response = requests.get(f"{TICKER_API}?pair={pairs_string}")
-        data = response.json().get("result", {})
+        try:
+            response = requests.get(
+                f"{TICKER_API}?pair={pairs_string}",
+                timeout=10
+            )
+            data = response.json().get("result", {})
+        except:
+            continue
 
         for pair, ticker in data.items():
 
@@ -57,29 +66,24 @@ def score_market():
 
             score = 0
 
-            # Momentum
             if change_percent > 2:
                 score += 2
             elif change_percent < -2:
                 score -= 2
 
-            # VWAP Trend
             if price > vwap_24h:
                 score += 1
             else:
                 score -= 1
 
-            # Daily range position
             if range_position > 0.75:
                 score += 1
             elif range_position < 0.25:
                 score -= 1
 
-            # Volume strength
             if volume_24h > 1_000_000:
                 score += 1
 
-            # Action mapping
             if score >= 4:
                 action = "STRONG BUY"
             elif score >= 2:
@@ -93,7 +97,7 @@ def score_market():
 
             results.append({
                 "pair": pair,
-                "price": price,
+                "price": round(price, 6),
                 "change": round(change_percent, 2),
                 "score": score,
                 "action": action
@@ -110,7 +114,6 @@ def home():
 
     market = score_market()
 
-    # Sort by strongest score first
     market_sorted = sorted(market, key=lambda x: x["score"], reverse=True)
 
     top_30 = market_sorted[:30]
