@@ -26,21 +26,34 @@ app.get("/signals", async (req, res) => {
 
       let score = 0;
 
-      if (price > 1) score += 2;
-      if (volume > 100000) score += 2;
-      if (Math.random() > 0.5) score += 2;
+      // Real logic (simple but consistent)
+      if (volume > 1000000) score += 3;     // strong volume
+      if (price > 50) score += 2;           // higher priced asset
+      if (price > 1000) score += 2;         // premium asset tier
 
       let action = "HOLD";
-      if (score >= 4) action = "BUY";
-      if (score <= 1) action = "SELL";
+      if (score >= 6) action = "BUY";
 
-      results.push({
-        pair,
-        price,
-        volume,
-        score,
-        action
-      });
+      results.push({ pair, price, volume, score, action });
+    }
+
+    const qualified = results.filter(r => r.score >= 6);
+
+    if (qualified.length === 0) {
+      return res.json({ message: "NO TRADE - Market not strong enough" });
+    }
+
+    qualified.sort((a, b) => b.score - a.score);
+
+    res.json({
+      best_trade: qualified[0],
+      qualified_trades: qualified
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
     }
 
     results.sort((a, b) => b.score - a.score);
