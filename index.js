@@ -5,22 +5,18 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 async function getSignals() {
-  // 1️⃣ Get all Kraken trading pairs
   const assetPairs = await axios.get(
     "https://api.kraken.com/0/public/AssetPairs"
   );
 
   const allPairs = Object.values(assetPairs.data.result);
 
-  // 2️⃣ Filter USD pairs only
   const usdPairs = allPairs
     .filter(p => p.wsname && p.wsname.endsWith("/USD"))
     .map(p => p.altname);
 
-  // Limit scan to top 25 pairs (performance safety)
   const pairsToScan = usdPairs.slice(0, 25);
 
-  // 3️⃣ Fetch all tickers in parallel
   const requests = pairsToScan.map(pair =>
     axios.get(`https://api.kraken.com/0/public/Ticker?pair=${pair}`)
   );
@@ -45,18 +41,14 @@ async function getSignals() {
 
     let score = 0;
 
-    // Volume strength
     if (volume > 5000000) score += 3;
     else if (volume > 1000000) score += 2;
 
-    // Momentum
     if (changePercent > 3) score += 3;
     else if (changePercent > 1) score += 2;
 
-    // Volatility expansion
     if (volatility > 5) score += 2;
 
-    // Premium asset tier
     if (price > 100) score += 1;
 
     let action = "HOLD";
@@ -76,10 +68,10 @@ async function getSignals() {
 
   results.sort((a, b) => b.score - a.score);
 
-  return results.slice(0, 15); // top 15 only
+  return results.slice(0, 15);
 }
 
-// API endpoint
+// JSON API
 app.get("/signals", async (req, res) => {
   try {
     const results = await getSignals();
@@ -104,6 +96,25 @@ app.get("/", async (req, res) => {
         r.action === "AVOID" ? "#ff4d4d" :
         "#ffd700";
 
+      let tradeButton = "";
+
+      if (r.action === "BUY") {
+        tradeButton = `
+          <a href="https://trade.kraken.com/charts/KRAKEN:${r.pair}"
+             target="_blank"
+             style="
+               background:#00ff88;
+               color:black;
+               padding:6px 12px;
+               border-radius:8px;
+               text-decoration:none;
+               font-weight:bold;
+             ">
+             TRADE
+          </a>
+        `;
+      }
+
       return `
         <tr>
           <td>${r.pair}</td>
@@ -114,6 +125,7 @@ app.get("/", async (req, res) => {
           <td style="color:${color}; font-weight:bold;">
             ${r.action}
           </td>
+          <td>${tradeButton}</td>
         </tr>
       `;
     }).join("");
@@ -121,7 +133,7 @@ app.get("/", async (req, res) => {
     res.send(`
       <html>
       <head>
-        <title>Structured Alpha Engine</title>
+        <title>Structured Alpha Market Scanner</title>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <meta http-equiv="refresh" content="20">
         <style>
@@ -140,7 +152,7 @@ app.get("/", async (req, res) => {
             margin-top: 20px;
           }
           th, td {
-            padding: 12px;
+            padding: 10px;
             border-bottom: 1px solid #334155;
             text-align: center;
           }
@@ -163,6 +175,7 @@ app.get("/", async (req, res) => {
             <th>Volatility %</th>
             <th>Score</th>
             <th>Signal</th>
+            <th>Trade</th>
           </tr>
           ${rows}
         </table>
@@ -170,7 +183,6 @@ app.get("/", async (req, res) => {
         <p style="text-align:center; margin-top:20px; opacity:0.6;">
           Auto-refresh every 20 seconds
         </p>
-
       </body>
       </html>
     `);
