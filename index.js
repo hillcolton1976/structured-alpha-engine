@@ -4,37 +4,79 @@ const axios = require("axios");
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Fetch market data + calculate signals
 async function getSignals() {
-  const pairs = ["XBTUSD", "ETHUSD", "SOLUSD", "XRPUSD"];
+  // 1️⃣ Get all Kraken trading pairs
+  const assetPairs = await axios.get(
+    "https://api.kraken.com/0/public/AssetPairs"
+  );
+
+  const allPairs = Object.values(assetPairs.data.result);
+
+  // 2️⃣ Filter USD pairs only
+  const usdPairs = allPairs
+    .filter(p => p.wsname && p.wsname.endsWith("/USD"))
+    .map(p => p.altname);
+
+  // Limit scan to top 25 pairs (performance safety)
+  const pairsToScan = usdPairs.slice(0, 25);
+
+  // 3️⃣ Fetch all tickers in parallel
+  const requests = pairsToScan.map(pair =>
+    axios.get(`https://api.kraken.com/0/public/Ticker?pair=${pair}`)
+  );
+
+  const responses = await Promise.all(requests);
+
   let results = [];
 
-  for (let pair of pairs) {
-    const response = await axios.get(
-      `https://api.kraken.com/0/public/Ticker?pair=${pair}`
-    );
-
+  responses.forEach((response, index) => {
+    const pair = pairsToScan[index];
     const dataKey = Object.keys(response.data.result)[0];
     const ticker = response.data.result[dataKey];
 
     const price = parseFloat(ticker.c[0]);
     const volume = parseFloat(ticker.v[1]);
+    const high = parseFloat(ticker.h[1]);
+    const low = parseFloat(ticker.l[1]);
+    const open = parseFloat(ticker.o);
+
+    const changePercent = ((price - open) / open) * 100;
+    const volatility = ((high - low) / low) * 100;
 
     let score = 0;
 
-    if (volume > 1000000) score += 3;
-    if (price > 50) score += 2;
-    if (price > 1000) score += 2;
+    // Volume strength
+    if (volume > 5000000) score += 3;
+    else if (volume > 1000000) score += 2;
+
+    // Momentum
+    if (changePercent > 3) score += 3;
+    else if (changePercent > 1) score += 2;
+
+    // Volatility expansion
+    if (volatility > 5) score += 2;
+
+    // Premium asset tier
+    if (price > 100) score += 1;
 
     let action = "HOLD";
-    if (score >= 6) action = "BUY";
-    if (score <= 1) action = "SELL";
+    if (score >= 7) action = "BUY";
+    if (score <= 2) action = "AVOID";
 
-    results.push({ pair, price, volume, score, action });
-  }
+    results.push({
+      pair,
+      price,
+      volume,
+      changePercent: changePercent.toFixed(2),
+      volatility: volatility.toFixed(2),
+      score,
+      action
+    });
+  });
 
   results.sort((a, b) => b.score - a.score);
-  return results;
+
+  return results.slice(0, 15); // top 15 only
 }
 
 // API endpoint
@@ -44,14 +86,14 @@ app.get("/signals", async (req, res) => {
     res.json({
       timestamp: new Date(),
       best_trade: results[0],
-      all_pairs: results
+      top_trades: results
     });
   } catch (error) {
-    res.status(500).json({ error: "Failed to fetch market data" });
+    res.status(500).json({ error: "Engine failed" });
   }
 });
 
-// 🔥 PRO DASHBOARD UI
+// Dashboard UI
 app.get("/", async (req, res) => {
   try {
     const results = await getSignals();
@@ -59,13 +101,15 @@ app.get("/", async (req, res) => {
     let rows = results.map(r => {
       let color =
         r.action === "BUY" ? "#00ff88" :
-        r.action === "SELL" ? "#ff4d4d" :
+        r.action === "AVOID" ? "#ff4d4d" :
         "#ffd700";
 
       return `
         <tr>
           <td>${r.pair}</td>
           <td>$${r.price.toFixed(2)}</td>
+          <td>${r.changePercent}%</td>
+          <td>${r.volatility}%</td>
           <td>${r.score}</td>
           <td style="color:${color}; font-weight:bold;">
             ${r.action}
@@ -79,17 +123,16 @@ app.get("/", async (req, res) => {
       <head>
         <title>Structured Alpha Engine</title>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <meta http-equiv="refresh" content="15">
+        <meta http-equiv="refresh" content="20">
         <style>
           body {
             background: #0f172a;
             color: white;
             font-family: Arial;
-            text-align: center;
             padding: 20px;
           }
           h1 {
-            margin-bottom: 20px;
+            text-align: center;
           }
           table {
             width: 100%;
@@ -97,8 +140,9 @@ app.get("/", async (req, res) => {
             margin-top: 20px;
           }
           th, td {
-            padding: 14px;
+            padding: 12px;
             border-bottom: 1px solid #334155;
+            text-align: center;
           }
           th {
             background: #1e293b;
@@ -106,39 +150,25 @@ app.get("/", async (req, res) => {
           tr:hover {
             background: #1e293b;
           }
-          .card {
-            background: #1e293b;
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 20px;
-          }
         </style>
       </head>
       <body>
-        <h1>📊 Structured Alpha Engine</h1>
-
-        <div class="card">
-          <h2>🔥 Best Trade</h2>
-          <h3>${results[0].pair}</h3>
-          <p>Price: $${results[0].price.toFixed(2)}</p>
-          <p>Score: ${results[0].score}</p>
-          <p style="font-size:22px; font-weight:bold;">
-            ${results[0].action}
-          </p>
-        </div>
+        <h1>📊 Structured Alpha Market Scanner</h1>
 
         <table>
           <tr>
             <th>Pair</th>
             <th>Price</th>
+            <th>24h %</th>
+            <th>Volatility %</th>
             <th>Score</th>
             <th>Signal</th>
           </tr>
           ${rows}
         </table>
 
-        <p style="margin-top:20px; opacity:0.6;">
-          Auto-refresh every 15 seconds
+        <p style="text-align:center; margin-top:20px; opacity:0.6;">
+          Auto-refresh every 20 seconds
         </p>
 
       </body>
@@ -146,10 +176,10 @@ app.get("/", async (req, res) => {
     `);
 
   } catch (error) {
-    res.send("Error loading dashboard");
+    res.send("Engine error");
   }
 });
 
 app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
+  console.log("Scanner running on port " + PORT);
 });
