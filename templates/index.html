@@ -1,13 +1,17 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Crypto Strength Scanner</title>
+    <title>Long-Term Crypto Strength</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="refresh" content="60">
+
     <style>
         body {
-            background: #0f2027;
-            font-family: Arial;
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
             color: white;
-            padding: 40px;
+            padding: 20px;
         }
 
         h1 {
@@ -18,7 +22,7 @@
             width: 100%;
             border-collapse: collapse;
             margin-top: 20px;
-            background: #1c2b36;
+            background: rgba(255,255,255,0.05);
             border-radius: 10px;
             overflow: hidden;
         }
@@ -29,27 +33,23 @@
         }
 
         th {
-            background: #243b55;
+            background: rgba(255,255,255,0.1);
         }
 
         tr:nth-child(even) {
-            background: #16222a;
+            background: rgba(255,255,255,0.03);
         }
 
-        .STRONG { color: #4CAF50; font-weight: bold; }
-        .NEUTRAL { color: #FFC107; font-weight: bold; }
-        .WEAK { color: #F44336; font-weight: bold; }
-
-        #updated {
-            margin-top: 10px;
-            opacity: 0.7;
-        }
+        .STRONG { color: #4caf50; font-weight: bold; }
+        .NEUTRAL { color: #ffc107; font-weight: bold; }
+        .WEAK { color: #f44336; font-weight: bold; }
     </style>
 </head>
+
 <body>
 
 <h1>📈 Long-Term Crypto Strength</h1>
-<div id="updated"></div>
+<p id="updated">Loading...</p>
 
 <table>
     <thead>
@@ -61,19 +61,18 @@
             <th>Strength</th>
         </tr>
     </thead>
-    <tbody id="table-body">
-    </tbody>
+    <tbody id="table-body"></tbody>
 </table>
 
 <script>
 async function loadData() {
-    const response = await fetch('/api/data');
-    const data = await response.json();
+    const res = await fetch('/api/data');
+    const data = await res.json();
 
-    document.getElementById("updated").innerText = 
+    document.getElementById('updated').innerText =
         "Updated: " + data.updated;
 
-    const tbody = document.getElementById("table-body");
+    const tbody = document.getElementById('table-body');
     tbody.innerHTML = "";
 
     data.markets.forEach((coin, index) => {
@@ -83,18 +82,13 @@ async function loadData() {
                 <td>${coin.pair}</td>
                 <td>$${coin.price}</td>
                 <td>${coin.score}</td>
-                <td class="${coin.strength}">
-                    ${coin.strength}
-                </td>
+                <td class="${coin.strength}">${coin.strength}</td>
             </tr>
         `;
     });
 }
 
-// Initial load
 loadData();
-
-// Refresh every 60 seconds
 setInterval(loadData, 60000);
 </script>
 
