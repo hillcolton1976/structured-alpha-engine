@@ -2,26 +2,23 @@
 <html>
 <head>
     <title>Long-Term Crypto Strength</title>
-
-    <!-- Auto refresh -->
     <meta http-equiv="refresh" content="60">
 
     <style>
         body {
-            margin: 0;
-            font-family: Arial, sans-serif;
-            background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+            font-family: Arial;
+            background: linear-gradient(135deg,#0f2027,#203a43,#2c5364);
             color: white;
             padding: 40px;
         }
 
         h1 {
-            color: #6ec1ff;
+            color: #4da6ff;
         }
 
         .updated {
             margin-bottom: 20px;
-            color: #ccc;
+            opacity: 0.7;
         }
 
         .buttons {
@@ -29,17 +26,17 @@
         }
 
         button {
-            padding: 10px 18px;
-            margin-right: 10px;
-            border: none;
+            padding: 10px 20px;
             border-radius: 8px;
-            font-weight: bold;
+            border: none;
+            margin-right: 10px;
             cursor: pointer;
+            font-weight: bold;
         }
 
-        .buy-btn { background: #2ecc71; }
-        .sell-btn { background: #e74c3c; }
-        .all-btn { background: #3498db; }
+        .buy { background: #2ecc71; color: white; }
+        .sell { background: #e74c3c; color: white; }
+        .all { background: #3498db; color: white; }
 
         table {
             width: 100%;
@@ -68,34 +65,42 @@
     </style>
 
     <script>
-        function filter(type) {
-            let rows = document.querySelectorAll("tbody tr");
+        function showAll() {
+            document.querySelectorAll("tbody tr").forEach(r => r.style.display = "");
+        }
 
-            rows.forEach(row => {
-                let strength = row.getAttribute("data-strength");
+        function showBuy() {
+            document.querySelectorAll("tbody tr").forEach(r => {
+                if (r.dataset.type === "STRONG" || r.dataset.type === "ACCUMULATION")
+                    r.style.display = "";
+                else
+                    r.style.display = "none";
+            });
+        }
 
-                if (type === "BUY") {
-                    row.style.display = (strength === "STRONG" || strength === "ACCUMULATION") ? "" : "none";
-                } 
-                else if (type === "SELL") {
-                    row.style.display = (strength === "WEAK") ? "" : "none";
-                } 
-                else {
-                    row.style.display = "";
-                }
+        function showSell() {
+            document.querySelectorAll("tbody tr").forEach(r => {
+                if (r.dataset.type === "WEAK")
+                    r.style.display = "";
+                else
+                    r.style.display = "none";
             });
         }
     </script>
 </head>
+
 <body>
 
 <h1>📈 Long-Term Crypto Strength</h1>
-<div class="updated">Updated: {{ now }}</div>
+
+<div class="updated">
+    Updated: {{ updated }}
+</div>
 
 <div class="buttons">
-    <button class="buy-btn" onclick="filter('BUY')">Buy Candidates</button>
-    <button class="sell-btn" onclick="filter('SELL')">Sell Candidates</button>
-    <button class="all-btn" onclick="filter('ALL')">Show All</button>
+    <button class="buy" onclick="showBuy()">Buy Candidates</button>
+    <button class="sell" onclick="showSell()">Sell Candidates</button>
+    <button class="all" onclick="showAll()">Show All</button>
 </div>
 
 <table>
@@ -109,8 +114,8 @@
         </tr>
     </thead>
     <tbody>
-        {% for coin in market %}
-        <tr data-strength="{{ coin.strength }}">
+        {% for coin in coins %}
+        <tr data-type="{{ coin.strength }}">
             <td>{{ loop.index }}</td>
             <td>{{ coin.coin }}</td>
             <td>${{ coin.price }}</td>
