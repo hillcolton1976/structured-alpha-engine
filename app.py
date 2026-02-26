@@ -18,9 +18,8 @@ def get_usd_pairs():
     usd_pairs = []
 
     for pair_name, details in data.items():
-        if details.get("quote") == "ZUSD":
-            if details.get("wsname"):
-                usd_pairs.append(pair_name)
+        if details.get("quote") == "ZUSD" and details.get("wsname"):
+            usd_pairs.append(pair_name)
 
     return usd_pairs
 
@@ -52,7 +51,6 @@ def score_market():
             except:
                 continue
 
-            # 🔒 Prevent division by zero (fixes 500 error)
             if vwap_24h == 0 or high_24h == low_24h:
                 continue
 
@@ -61,29 +59,24 @@ def score_market():
 
             score = 0
 
-            # Momentum
             if change_percent > 2:
                 score += 2
             elif change_percent < -2:
                 score -= 2
 
-            # VWAP Trend
             if price > vwap_24h:
                 score += 1
             else:
                 score -= 1
 
-            # Daily range position
             if range_position > 0.75:
                 score += 1
             elif range_position < 0.25:
                 score -= 1
 
-            # Volume strength
             if volume_24h > 1_000_000:
                 score += 1
 
-            # Action mapping
             if score >= 4:
                 action = "STRONG BUY"
             elif score >= 2:
@@ -113,8 +106,6 @@ def score_market():
 def home():
 
     market = score_market()
-
-    # Sort strongest first
     market_sorted = sorted(market, key=lambda x: x["score"], reverse=True)
 
     top_30 = market_sorted[:30]
@@ -124,6 +115,14 @@ def home():
     <html>
     <head>
         <title>Kraken Market Scanner</title>
+
+        <!-- AUTO REFRESH EVERY 30 SECONDS -->
+        <script>
+            setTimeout(function(){
+               window.location.reload(1);
+            }, 30000);
+        </script>
+
         <style>
             body { font-family: Arial; background: #111; color: white; padding: 20px; }
             h1 { color: #00ffcc; }
@@ -140,7 +139,7 @@ def home():
     <body>
 
     <h1>🚀 Kraken Market Scanner</h1>
-    <p>Updated: {{ time }}</p>
+    <p>Updated: {{ time }} (Auto refreshes every 30s)</p>
 
     <h2>🔥 Top 30 Strongest</h2>
     <table>
