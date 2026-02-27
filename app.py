@@ -1,90 +1,148 @@
+from flask import Flask, render_template
 import requests
 import pandas as pd
 import numpy as np
-import time
-from flask import Flask, render_template
+import random
 
 app = Flask(__name__)
 
-balance = 50.0
-position = None
-entry_price = 0
-level = 1
+# ==============================
+# CONFIG
+# ==============================
+
+START_BALANCE = 50.0
+
+COINS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "DOGEUSDT"
+]
+
+RSI_PERIOD = 14
+BUY_RSI = 30
+SELL_RSI = 70
+
+# ==============================
+# STORAGE (paper mode)
+# ==============================
+
+portfolio = {
+    "cash": START_BALANCE,
+    "positions": {coin: 0 for coin in COINS},
+    "entry_prices": {coin: 0 for coin in COINS}
+}
+
 trade_log = []
-last_update = time.time()
 
-PAIR = "BTCUSD"
-FEE = 0.0026
-SLIPPAGE = 0.001
+# ==============================
+# HELPERS
+# ==============================
 
-def get_price():
-    url = f"https://api.kraken.com/0/public/Ticker?pair={PAIR}"
+def get_price(symbol):
+    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
     data = requests.get(url).json()
-    price = list(data["result"].values())[0]["c"][0]
-    return float(price)
+    return float(data["price"])
 
-def calculate_rsi(series, period=14):
+def get_klines(symbol):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
+    data = requests.get(url).json()
+    closes = [float(k[4]) for k in data]
+    return closes
+
+def calculate_rsi(closes, period=14):
+    series = pd.Series(closes)
     delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
 
-def determine_risk():
-    global level
+    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi.iloc[-1]
+
+def portfolio_value():
+    total = portfolio["cash"]
+    for coin in COINS:
+        if portfolio["positions"][coin] > 0:
+            price = get_price(coin)
+            total += portfolio["positions"][coin] * price
+    return round(total, 2)
+
+# ==============================
+# TRADING ENGINE
+# ==============================
+
+def run_engine():
+    allocation = portfolio["cash"] / len(COINS)
+
+    for coin in COINS:
+        try:
+            price = get_price(coin)
+            closes = get_klines(coin)
+            rsi = calculate_rsi(closes)
+
+            # BUY
+            if rsi < BUY_RSI and portfolio["positions"][coin] == 0:
+                amount = allocation / price
+                portfolio["positions"][coin] = amount
+                portfolio["entry_prices"][coin] = price
+                portfolio["cash"] -= allocation
+
+                trade_log.append({
+                    "coin": coin,
+                    "action": "BUY",
+                    "price": price
+                })
+
+            # SELL
+            elif rsi > SELL_RSI and portfolio["positions"][coin] > 0:
+                amount = portfolio["positions"][coin]
+                portfolio["cash"] += amount * price
+                portfolio["positions"][coin] = 0
+
+                trade_log.append({
+                    "coin": coin,
+                    "action": "SELL",
+                    "price": price
+                })
+
+        except:
+            continue
+
+# ==============================
+# LEVEL SYSTEM
+# ==============================
+
+def level_from_balance(balance):
     if balance < 200:
-        level = 1
-        return 0.05
+        return 1
     elif balance < 1000:
-        level = 2
-        return 0.03
+        return 2
     elif balance < 5000:
-        level = 3
-        return 0.02
+        return 3
     else:
-        level = 4
-        return 0.01
+        return 4
+
+# ==============================
+# ROUTE
+# ==============================
 
 @app.route("/")
-def home():
-    global balance, position, entry_price, trade_log, last_update
+def dashboard():
+    run_engine()
 
-    price = get_price()
-
-    # fake small history window for RSI simulation
-    prices = pd.Series(np.random.normal(price, price * 0.002, 100))
-    rsi = calculate_rsi(prices).iloc[-1]
-
-    risk_pct = determine_risk()
-
-    action = "HOLD"
-
-    if position is None and rsi < 30:
-        position = balance * risk_pct / price
-        entry_price = price * (1 + SLIPPAGE)
-        balance -= position * entry_price
-        balance -= balance * FEE
-        action = "BUY"
-
-    elif position is not None and rsi > 55:
-        exit_price = price * (1 - SLIPPAGE)
-        balance += position * exit_price
-        balance -= balance * FEE
-        profit = (exit_price - entry_price) * position
-        trade_log.append(round(profit, 2))
-        position = None
-        action = "SELL"
+    value = portfolio_value()
+    level = level_from_balance(value)
 
     return render_template(
         "dashboard.html",
-        balance=round(balance, 2),
+        portfolio_value=value,
         level=level,
-        price=round(price, 2),
-        rsi=round(rsi, 2),
-        action=action,
+        cash=round(portfolio["cash"], 2),
+        positions=portfolio["positions"],
         trades=trade_log[-10:]
     )
 
