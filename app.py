@@ -1,7 +1,6 @@
 from flask import Flask, render_template_string
 import ccxt
 import pandas as pd
-import time
 
 app = Flask(__name__)
 
@@ -148,6 +147,12 @@ def dashboard():
     roi = ((equity - START_BALANCE) / START_BALANCE) * 100
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
 
+    # ROUND HERE (NOT IN TEMPLATE)
+    equity_r = round(equity, 2)
+    balance_r = round(balance, 2)
+    roi_r = round(roi, 2)
+    win_rate_r = round(win_rate, 2)
+
     return render_template_string("""
     <html>
     <head>
@@ -173,9 +178,9 @@ def dashboard():
         <h1>🚀 Aggressive Momentum Engine</h1>
 
         <div class="card">
-            <b>Equity:</b> ${{round(equity,2)}}<br>
-            <b>Cash:</b> ${{round(balance,2)}}<br>
-            <b>ROI:</b> {{round(roi,2)}}%<br>
+            <b>Equity:</b> ${{equity}}<br>
+            <b>Cash:</b> ${{balance}}<br>
+            <b>ROI:</b> {{roi}}%<br>
             <b>Last Action:</b> {{last_action}}
         </div>
 
@@ -184,14 +189,14 @@ def dashboard():
             Trades: {{total_trades}}<br>
             Wins: {{wins}}<br>
             Losses: {{losses}}<br>
-            Win Rate: {{round(win_rate,2)}}%
+            Win Rate: {{win_rate}}%
         </div>
 
         <div class="card">
             <h2>Open Positions ({{positions|length}} / """ + str(MAX_POSITIONS) + """)</h2>
             {% if positions %}
                 {% for s,p in positions.items() %}
-                    {{s}} — Entry: {{round(p.entry,4)}}<br>
+                    {{s}} — Entry: {{p.entry}}<br>
                 {% endfor %}
             {% else %}
                 No open positions
@@ -208,14 +213,14 @@ def dashboard():
     </body>
     </html>
     """,
-    equity=equity,
-    balance=balance,
-    roi=roi,
+    equity=equity_r,
+    balance=balance_r,
+    roi=roi_r,
+    win_rate=win_rate_r,
     last_action=last_action,
     total_trades=total_trades,
     wins=wins,
     losses=losses,
-    win_rate=win_rate,
     positions=positions,
     recent_signals=recent_signals
     )
