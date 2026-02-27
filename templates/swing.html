@@ -1,28 +1,14 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Swing Engine</title>
-    <style>
-        body {
-            background-color: #0f172a;
-            color: #e2e8f0;
-            font-family: Arial, sans-serif;
-            padding: 20px;
-        }
-
-        .card {
-            background-color: #1e293b;
-            padding: 20px;
-            border-radius: 12px;
-            margin-top: 20px;
-        }
-
-        .buy { color: #22c55e; }
-        .sell { color: #ef4444; }
-
-        h1 { margin-bottom: 5px; }
-        hr { border: 1px solid #334155; }
-    </style>
+<title>Swing Engine Pro</title>
+<meta http-equiv="refresh" content="60">
+<style>
+body { font-family: Arial; background:#0f172a; color:white; padding:40px; }
+.card { background:#1e293b; padding:25px; border-radius:10px; margin-top:20px; }
+.buy { color:#22c55e; }
+.hold { color:#facc15; }
+</style>
 </head>
 <body>
 
@@ -32,28 +18,29 @@
 <p>Stage: {{ stage }}</p>
 
 <div class="card">
-    <h2>🔥 Best Swing Setup (4H)</h2>
+<h2>🔥 Best 4H Setup</h2>
 
-    <p><strong>Coin:</strong> {{ setup.coin }}</p>
-    <p><strong>Price:</strong> ${{ setup.price }}</p>
-    <p><strong>Score:</strong> {{ setup.score }}</p>
+<p><strong>Coin:</strong> {{ setup.coin }}</p>
+<p><strong>Price:</strong> ${{ setup.price }}</p>
+<p><strong>Score:</strong> {{ setup.score }}</p>
 
-    {% if setup.signal == "BUY" %}
-        <p class="buy"><strong>Signal: BUY</strong></p>
-    {% else %}
-        <p class="sell"><strong>Signal: SELL</strong></p>
-    {% endif %}
+{% if setup.signal == "BUY" %}
+<p class="buy"><strong>Signal: BUY</strong></p>
+{% else %}
+<p class="hold"><strong>Signal: HOLD</strong></p>
+{% endif %}
 
-    <hr>
+<hr>
 
-    <p><strong>Entry:</strong> {{ setup.entry }}</p>
-    <p><strong>Take Profit:</strong> {{ setup.take_profit }}</p>
-    <p><strong>Stop Loss:</strong> {{ setup.stop_loss }}</p>
-    <p><strong>Suggested Position Size:</strong> {{ setup.position_size }}</p>
+<p><strong>Entry:</strong> {{ setup.entry }}</p>
+<p><strong>Take Profit:</strong> {{ setup.take_profit }}</p>
+<p><strong>Stop Loss:</strong> {{ setup.stop_loss }}</p>
+<p><strong>Position Size:</strong> {{ setup.position_size }}</p>
+
 </div>
 
 <p style="margin-top:20px;">
-Manual execution on Kraken • One trade at a time • Risk controlled
+Manual execution on Kraken • 4H Trend System • Risk Controlled
 </p>
 
 </body>
