@@ -1,179 +1,217 @@
-from flask import Flask, render_template_string
 import ccxt
 import pandas as pd
-import threading
 import time
+from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
-# ===============================
+# ==============================
 # CONFIG
-# ===============================
+# ==============================
+SYMBOLS = ["BTC/USDT","ETH/USDT","XRP/USDT","BNB/USDT","ADA/USDT"]
+TIMEFRAME_ENTRY = "1m"
+TIMEFRAME_TREND = "5m"
 
-TIMEFRAME = '1m'
-SCAN_INTERVAL = 60
-MAX_COINS = 7   # You can raise to 11 later
+TP_PERCENT = 0.004      # 0.4%
+SL_PERCENT = 0.0025     # 0.25%
+TRAIL_PERCENT = 0.0025
 
-# ===============================
+POSITION_SIZE = 10
+START_BALANCE = 50
+
+# ==============================
 # GLOBAL STATE
-# ===============================
+# ==============================
+balance = START_BALANCE
+positions = {}
+total_trades = 0
+wins = 0
+losses = 0
+last_action = "Starting..."
+recent_signals = []
 
-stats = {
-    "trades": 0,
-    "wins": 0,
-    "losses": 0
-}
-
-open_positions = {}
-signals = []
-coin_list = []
-
-# ===============================
-# EXCHANGE (Binance US SAFE)
-# ===============================
-
-exchange = ccxt.binanceus({
-    'enableRateLimit': True
+exchange = ccxt.kraken({
+    "enableRateLimit": True
 })
 
-# ===============================
-# HELPERS
-# ===============================
-
-def get_top_coins():
-    markets = exchange.load_markets()
-    usdt_pairs = [
-        s for s in markets
-        if "/USDT" in s and markets[s]['active']
-    ]
-    return usdt_pairs[:MAX_COINS]
-
-def fetch_dataframe(symbol):
+# ==============================
+# DATA FETCH
+# ==============================
+def get_df(symbol, timeframe, limit=100):
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=50)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        if not ohlcv:
+            return None
+
         df = pd.DataFrame(
             ohlcv,
-            columns=['timestamp','open','high','low','close','volume']
+            columns=["timestamp","open","high","low","close","volume"]
         )
+
+        if len(df) < 50:
+            return None
+
+        df["ema9"] = df["close"].ewm(span=9).mean()
+        df["ema21"] = df["close"].ewm(span=21).mean()
+        df["ema50"] = df["close"].ewm(span=50).mean()
+        df["ema200"] = df["close"].ewm(span=200).mean()
+
+        df["rsi"] = compute_rsi(df["close"])
+        df["vol_avg"] = df["volume"].rolling(20).mean()
+
         return df
     except:
         return None
 
-def add_indicators(df):
-    if df is None or len(df) < 30:
-        return None
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-    df['ema9'] = df['close'].ewm(span=9).mean()
-    df['ema21'] = df['close'].ewm(span=21).mean()
-    return df
+# ==============================
+# STRATEGY LOGIC
+# ==============================
+def trend_filter(symbol):
+    df = get_df(symbol, TIMEFRAME_TREND)
+    if df is None:
+        return False
+    return df["ema50"].iloc[-1] > df["ema200"].iloc[-1]
 
-def check_entry(df):
-    if df is None or len(df) < 30:
+def momentum_entry(symbol):
+    df = get_df(symbol, TIMEFRAME_ENTRY)
+    if df is None:
         return False
 
-    if df['ema9'].iloc[-1] > df['ema21'].iloc[-1]:
-        return True
-    return False
+    # fresh EMA cross
+    if not (
+        df["ema9"].iloc[-1] > df["ema21"].iloc[-1] and
+        df["ema9"].iloc[-2] <= df["ema21"].iloc[-2]
+    ):
+        return False
 
-# ===============================
-# ENGINE LOOP
-# ===============================
+    # RSI filter
+    if not (55 < df["rsi"].iloc[-1] < 70):
+        return False
 
-def engine():
-    global signals, open_positions, stats, coin_list
+    # volume spike
+    if df["volume"].iloc[-1] < df["vol_avg"].iloc[-1] * 1.5:
+        return False
 
-    while True:
-        try:
-            coin_list = get_top_coins()
+    return True
 
-            for symbol in coin_list:
-                df = fetch_dataframe(symbol)
-                df = add_indicators(df)
+# ==============================
+# TRADE MANAGEMENT
+# ==============================
+def check_positions():
+    global balance, wins, losses, total_trades, last_action
 
-                if df is None:
-                    continue
+    for symbol in list(positions.keys()):
+        df = get_df(symbol, TIMEFRAME_ENTRY)
+        if df is None:
+            continue
 
-                price = df['close'].iloc[-1]
+        current_price = df["close"].iloc[-1]
+        entry = positions[symbol]["entry"]
+        size = positions[symbol]["size"]
 
-                # ENTRY
-                if symbol not in open_positions:
-                    if check_entry(df):
-                        open_positions[symbol] = price
-                        stats["trades"] += 1
-                        signals.append(f"BUY {symbol} @ {price}")
+        change = (current_price - entry) / entry
 
-                # EXIT
-                else:
-                    entry_price = open_positions[symbol]
+        # Take Profit
+        if change >= TP_PERCENT:
+            profit = size * change
+            balance += size + profit
+            wins += 1
+            total_trades += 1
+            last_action = f"TP hit {symbol}"
+            del positions[symbol]
 
-                    if price > entry_price * 1.003:
-                        stats["wins"] += 1
-                        signals.append(f"WIN {symbol}")
-                        del open_positions[symbol]
+        # Stop Loss
+        elif change <= -SL_PERCENT:
+            loss_amount = size * abs(change)
+            balance -= loss_amount
+            losses += 1
+            total_trades += 1
+            last_action = f"SL hit {symbol}"
+            del positions[symbol]
 
-                    elif price < entry_price * 0.997:
-                        stats["losses"] += 1
-                        signals.append(f"LOSS {symbol}")
-                        del open_positions[symbol]
+def evaluate():
+    global balance, last_action
 
-        except Exception as e:
-            print("Engine error:", e)
+    check_positions()
 
-        time.sleep(SCAN_INTERVAL)
+    if balance < POSITION_SIZE:
+        return
 
-# ===============================
-# START BACKGROUND THREAD
-# ===============================
+    for symbol in SYMBOLS:
+        if symbol in positions:
+            continue
 
-threading.Thread(target=engine, daemon=True).start()
+        if trend_filter(symbol) and momentum_entry(symbol):
+            df = get_df(symbol, TIMEFRAME_ENTRY)
+            if df is None:
+                continue
 
-# ===============================
+            price = df["close"].iloc[-1]
+
+            positions[symbol] = {
+                "entry": price,
+                "size": POSITION_SIZE
+            }
+
+            balance -= POSITION_SIZE
+            last_action = f"Entered {symbol}"
+            recent_signals.append(symbol)
+            break
+
+# ==============================
 # DASHBOARD
-# ===============================
-
+# ==============================
 @app.route("/")
 def dashboard():
+    evaluate()
+
+    roi = ((balance - START_BALANCE) / START_BALANCE) * 100
+    win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+
     return render_template_string("""
-    <html>
-    <head>
-        <meta http-equiv="refresh" content="60">
-        <title>Trading Bot</title>
-    </head>
-    <body style="font-family: Arial; background:#111; color:#0f0;">
-        <h1>🚀 Trading Bot Dashboard</h1>
+    <body style="background:black;color:#00ff00;font-family:monospace">
+    <h1>🚀 Hybrid Momentum Engine</h1>
 
-        <h2>Stats</h2>
-        <p>Trades: {{stats.trades}}</p>
-        <p>Wins: {{stats.wins}}</p>
-        <p>Losses: {{stats.losses}}</p>
+    <h3>Balance: ${{balance}}</h3>
+    <p>ROI: {{roi}}%</p>
+    <p>Last Action: {{last_action}}</p>
 
-        <h2>Scanning Coins</h2>
-        <ul>
-        {% for coin in coin_list %}
-            <li>{{coin}}</li>
-        {% endfor %}
-        </ul>
+    <h2>Stats</h2>
+    <p>Trades: {{total_trades}}</p>
+    <p>Wins: {{wins}}</p>
+    <p>Losses: {{losses}}</p>
+    <p>Win Rate: {{win_rate}}%</p>
 
-        <h2>Open Positions</h2>
-        <ul>
-        {% for coin, price in open_positions.items() %}
-            <li>{{coin}} @ {{price}}</li>
-        {% endfor %}
-        </ul>
+    <h2>Open Positions</h2>
+    {% for sym,pos in positions.items() %}
+        <p>{{sym}} @ {{pos.entry}}</p>
+    {% endfor %}
 
-        <h2>Recent Signals</h2>
-        <ul>
-        {% for s in signals[-10:] %}
-            <li>{{s}}</li>
-        {% endfor %}
-        </ul>
-
+    <h2>Recent Signals</h2>
+    {% for s in signals %}
+        <p>{{s}}</p>
+    {% endfor %}
     </body>
-    </html>
-    """, stats=stats,
-         signals=signals,
-         open_positions=open_positions,
-         coin_list=coin_list)
+    """,
+    balance=round(balance,2),
+    roi=round(roi,2),
+    last_action=last_action,
+    total_trades=total_trades,
+    wins=wins,
+    losses=losses,
+    win_rate=round(win_rate,2),
+    positions=positions,
+    signals=recent_signals[-5:]
+    )
 
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=8080)
