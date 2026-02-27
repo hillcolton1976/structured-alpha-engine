@@ -1,84 +1,92 @@
+import requests
+import pandas as pd
+import numpy as np
+import time
 from flask import Flask, render_template
-import random
 
 app = Flask(__name__)
 
-START_BALANCE = 50
-WIN_RATE = 0.52
-RISK_PERCENT = 0.05
-RR = 2
+balance = 50.0
+position = None
+entry_price = 0
+level = 1
+trade_log = []
+last_update = time.time()
 
-LEVELS = [
-    (200, "Stage 2"),
-    (1000, "Stage 3"),
-    (5000, "Stage 4")
-]
+PAIR = "BTCUSD"
+FEE = 0.0026
+SLIPPAGE = 0.001
 
-def simulate():
+def get_price():
+    url = f"https://api.kraken.com/0/public/Ticker?pair={PAIR}"
+    data = requests.get(url).json()
+    price = list(data["result"].values())[0]["c"][0]
+    return float(price)
 
-    balance = START_BALANCE
-    trades = 0
-    wins = 0
-    losses = 0
-    max_balance = balance
-    max_drawdown = 0
-    stage = "Stage 1"
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-    trade_log = []
-
-    while balance < 5000 and trades < 1000:
-
-        risk_amount = balance * RISK_PERCENT
-
-        if random.random() < WIN_RATE:
-            profit = risk_amount * RR
-            balance += profit
-            wins += 1
-            result = "WIN"
-        else:
-            balance -= risk_amount
-            losses += 1
-            result = "LOSS"
-
-        trades += 1
-
-        if balance > max_balance:
-            max_balance = balance
-
-        drawdown = (max_balance - balance) / max_balance
-        if drawdown > max_drawdown:
-            max_drawdown = drawdown
-
-        for level, name in LEVELS:
-            if balance >= level:
-                stage = name
-
-        trade_log.append({
-            "trade": trades,
-            "result": result,
-            "balance": round(balance, 2)
-        })
-
-        if balance <= 0:
-            break
-
-    win_rate_actual = (wins / trades) * 100 if trades > 0 else 0
-
-    return {
-        "balance": round(balance, 2),
-        "trades": trades,
-        "wins": wins,
-        "losses": losses,
-        "win_rate": round(win_rate_actual, 2),
-        "max_drawdown": round(max_drawdown * 100, 2),
-        "stage": stage,
-        "trade_log": trade_log[-20:]
-    }
+def determine_risk():
+    global level
+    if balance < 200:
+        level = 1
+        return 0.05
+    elif balance < 1000:
+        level = 2
+        return 0.03
+    elif balance < 5000:
+        level = 3
+        return 0.02
+    else:
+        level = 4
+        return 0.01
 
 @app.route("/")
 def home():
-    results = simulate()
-    return render_template("sim.html", **results)
+    global balance, position, entry_price, trade_log, last_update
+
+    price = get_price()
+
+    # fake small history window for RSI simulation
+    prices = pd.Series(np.random.normal(price, price * 0.002, 100))
+    rsi = calculate_rsi(prices).iloc[-1]
+
+    risk_pct = determine_risk()
+
+    action = "HOLD"
+
+    if position is None and rsi < 30:
+        position = balance * risk_pct / price
+        entry_price = price * (1 + SLIPPAGE)
+        balance -= position * entry_price
+        balance -= balance * FEE
+        action = "BUY"
+
+    elif position is not None and rsi > 55:
+        exit_price = price * (1 - SLIPPAGE)
+        balance += position * exit_price
+        balance -= balance * FEE
+        profit = (exit_price - entry_price) * position
+        trade_log.append(round(profit, 2))
+        position = None
+        action = "SELL"
+
+    return render_template(
+        "dashboard.html",
+        balance=round(balance, 2),
+        level=level,
+        price=round(price, 2),
+        rsi=round(rsi, 2),
+        action=action,
+        trades=trade_log[-10:]
+    )
 
 if __name__ == "__main__":
     app.run(debug=True)
