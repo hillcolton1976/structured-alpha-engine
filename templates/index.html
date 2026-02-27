@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Alpha Engine Pro</title>
+    <title>Swing Engine – Capital Builder</title>
     <meta http-equiv="refresh" content="60">
     <style>
         body {
@@ -13,93 +13,52 @@
 
         h1 { margin-bottom: 5px; }
 
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 15px;
-        }
-
-        th {
-            background: #161b22;
-            padding: 10px;
-            text-align: left;
-        }
-
-        td {
-            padding: 10px;
-            border-bottom: 1px solid #30363d;
-        }
-
-        tr:hover { background: #1f2937; }
-
-        .BUY { color: #22c55e; font-weight: bold; }
-        .SELL { color: #ef4444; font-weight: bold; }
-        .HOLD { color: #facc15; font-weight: bold; }
-
         .card {
-            margin-top: 40px;
-            padding: 20px;
             background: #161b22;
-            border-radius: 8px;
+            padding: 25px;
+            border-radius: 10px;
+            margin-top: 30px;
+            width: 600px;
         }
 
-        .big {
-            font-size: 20px;
-            font-weight: bold;
-        }
+        .BUY { color: #22c55e; font-weight: bold; font-size: 20px; }
+        .SELL { color: #ef4444; font-weight: bold; font-size: 20px; }
+        .NO { color: #facc15; font-weight: bold; font-size: 20px; }
 
         .footer {
-            margin-top: 30px;
+            margin-top: 40px;
             opacity: 0.6;
         }
     </style>
 </head>
 <body>
 
-<h1>📊 Alpha Engine Pro</h1>
+<h1>📈 Swing Engine – Capital Builder</h1>
 <div>Updated: {{ updated }}</div>
-
-<h2>🔥 Market Signals</h2>
-
-<table>
-<tr>
-<th>Coin</th>
-<th>Price</th>
-<th>Signal</th>
-<th>Alignment</th>
-<th>RSI</th>
-</tr>
-
-{% for coin in results %}
-<tr>
-<td>{{ coin.symbol }}</td>
-<td>${{ coin.price }}</td>
-<td class="{{ coin.signal }}">{{ coin.signal }}</td>
-<td>{{ coin.alignment }}</td>
-<td>{{ coin.rsi }}</td>
-</tr>
-{% endfor %}
-
-</table>
+<div>Account Balance: ${{ balance }}</div>
+<div>{{ stage }}</div>
 
 <div class="card">
-<h2>🚀 Portfolio Builder</h2>
+    <h2>🔥 Best Swing Setup</h2>
 
-<div class="big">Start: ${{ sim.start }}</div>
-<div class="big">Target: ${{ sim.target }}</div>
-<div class="big">End Balance: ${{ sim.end }}</div>
+    <p><strong>Coin:</strong> {{ symbol }}</p>
+    <p><strong>Price:</strong> ${{ price }}</p>
+    <p><strong>Score:</strong> {{ score }}</p>
 
-<br>
+    <p><strong>Signal:</strong> 
+        <span class="{{ signal }}">{{ signal }}</span>
+    </p>
 
-Wins: {{ sim.wins }} <br>
-Losses: {{ sim.losses }} <br>
-Win Rate: {{ sim.winrate }}% <br>
-Max Drawdown: {{ sim.drawdown }}%
+    <hr>
 
+    <p><strong>Entry:</strong> {{ entry }}</p>
+    <p><strong>Take Profit:</strong> {{ take_profit }}</p>
+    <p><strong>Stop Loss:</strong> {{ stop_loss }}</p>
+    <p><strong>Suggested Position Size:</strong> ${{ size }}</p>
 </div>
 
 <div class="footer">
-Auto-refreshes every 60 seconds • Simulated Risk Model
+Manual execution on Kraken • One trade at a time • Risk controlled
 </div>
 
 </body>
