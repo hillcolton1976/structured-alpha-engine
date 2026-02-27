@@ -1,233 +1,240 @@
 import ccxt
 import pandas as pd
 import numpy as np
-from flask import Flask, render_template_string
+import time
+from flask import Flask, render_template
+from datetime import datetime
 
 app = Flask(__name__)
 
-# ---- EXCHANGE ----
-exchange = ccxt.kucoin({
-    'enableRateLimit': True
-})
+# =============================
+# CONFIG
+# =============================
 
-START_BALANCE = 50
-RISK_PER_TRADE = 0.07
+START_BALANCE = 50.0
+cash_balance = START_BALANCE
+equity = START_BALANCE
 
-engine = {
-    "balance": START_BALANCE,
-    "positions": {},
-    "wins": 0,
-    "losses": 0,
-    "total_trades": 0,
-    "last_action": "Starting..."
-}
+MAX_POSITIONS = 5
+POSITION_SIZE = 0.14  # 14% per position
+STOP_LOSS = -0.006    # -0.6%
+TAKE_PROFIT = 0.018   # +1.8%
+TRAIL_TRIGGER = 0.01  # start trailing after +1%
+COOLDOWN_SECONDS = 300
+EVALUATION_INTERVAL = 60
 
-# ---- GET TOP 50 USDT PAIRS ----
-def get_top_50():
+exchange = ccxt.coinbase()
+
+open_positions = {}
+last_exit_time = {}
+
+total_trades = 0
+wins = 0
+losses = 0
+last_action = "Starting..."
+
+# =============================
+# UTILITIES
+# =============================
+
+def get_top_markets(limit=50):
     markets = exchange.load_markets()
-    usdt_pairs = [s for s in markets if "/USDT" in s and markets[s]['active']]
+    usdt_pairs = [
+        symbol for symbol in markets
+        if "/USDT" in symbol and markets[symbol]['active']
+    ]
+    return usdt_pairs[:limit]
 
-    tickers = exchange.fetch_tickers(usdt_pairs)
 
-    sorted_pairs = sorted(
-        tickers.items(),
-        key=lambda x: x[1]['quoteVolume'] if x[1]['quoteVolume'] else 0,
-        reverse=True
-    )
+def fetch_dataframe(symbol, timeframe, limit=100):
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=["ts","open","high","low","close","volume"])
+        return df
+    except:
+        return None
 
-    return [pair[0] for pair in sorted_pairs[:50]]
 
-# ---- FETCH 1M DATA ----
-def fetch_data(symbol):
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=50)
-    df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','volume'])
+def ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()
 
-    df['ema9'] = df['close'].ewm(span=9).mean()
 
-    delta = df['close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-    rs = avg_gain / avg_loss
-    df['rsi'] = 100 - (100 / (1 + rs))
+def trend_filter(symbol):
+    df = fetch_dataframe(symbol, '5m', 100)
+    if df is None:
+        return False
 
-    return df
+    df['ema50'] = ema(df['close'], 50)
 
-# ---- CORE ENGINE ----
+    if df['close'].iloc[-1] > df['ema50'].iloc[-1]:
+        if df['ema50'].iloc[-1] > df['ema50'].iloc[-2]:
+            return True
+
+    return False
+
+
+def momentum_entry(symbol):
+    df = fetch_dataframe(symbol, '1m', 50)
+    if df is None:
+        return False
+
+    df['ema9'] = ema(df['close'], 9)
+    df['ema21'] = ema(df['close'], 21)
+
+    if df['ema9'].iloc[-1] > df['ema21'].iloc[-1]:
+        if df['ema9'].iloc[-2] <= df['ema21'].iloc[-2]:
+            return True
+
+    return False
+
+
+# =============================
+# CORE ENGINE
+# =============================
+
 def evaluate():
+    global cash_balance, equity, total_trades, wins, losses, last_action
 
-    balance = engine["balance"]
+    symbols = get_top_markets()
 
-    # Dynamic scaling
-    if balance < 200:
-        min_pos = 2
-        max_pos = 7
-    else:
-        min_pos = 7
-        max_pos = 11
+    # === Manage Open Positions ===
+    for symbol in list(open_positions.keys()):
+        try:
+            ticker = exchange.fetch_ticker(symbol)
+            current_price = ticker['last']
+        except:
+            continue
 
-    symbols = get_top_50()
+        entry = open_positions[symbol]['entry']
+        change_pct = (current_price - entry) / entry
 
-    # ---- EXIT LOGIC ----
-    for symbol in list(engine["positions"].keys()):
-        df = fetch_data(symbol)
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
+        # Trailing Stop Activation
+        if change_pct >= TRAIL_TRIGGER:
+            open_positions[symbol]['trail'] = current_price * 0.995
 
-        entry = engine["positions"][symbol]["entry"]
-        size = engine["positions"][symbol]["size"]
-
-        current_price = latest["close"]
-        pnl = (current_price - entry) / entry
-
-        if (
-            latest["close"] < latest["ema9"] or
-            latest["rsi"] < 55 or
-            latest["close"] < prev["close"]
-        ):
-            engine["balance"] += size * (1 + pnl)
-            engine["total_trades"] += 1
-
-            if pnl > 0:
-                engine["wins"] += 1
-                engine["last_action"] = f"Exited {symbol} Profit"
+        # Update trailing
+        if 'trail' in open_positions[symbol]:
+            if current_price < open_positions[symbol]['trail']:
+                change_pct = (current_price - entry) / entry
+                close_position(symbol, change_pct)
+                continue
             else:
-                engine["losses"] += 1
-                engine["last_action"] = f"Exited {symbol} Loss"
+                open_positions[symbol]['trail'] = max(
+                    open_positions[symbol]['trail'],
+                    current_price * 0.995
+                )
 
-            del engine["positions"][symbol]
+        # Stop Loss
+        if change_pct <= STOP_LOSS:
+            close_position(symbol, change_pct)
+            continue
 
-    # ---- ENTRY LOGIC ----
-    if len(engine["positions"]) < max_pos:
+        # Take Profit
+        if change_pct >= TAKE_PROFIT:
+            close_position(symbol, change_pct)
+            continue
+
+    # === Open New Positions ===
+    if len(open_positions) < MAX_POSITIONS:
         for symbol in symbols:
 
-            if symbol in engine["positions"]:
+            if symbol in open_positions:
                 continue
 
-            df = fetch_data(symbol)
-            latest = df.iloc[-1]
+            if symbol in last_exit_time:
+                if time.time() - last_exit_time[symbol] < COOLDOWN_SECONDS:
+                    continue
 
-            if (
-                latest["close"] > latest["ema9"] and
-                latest["rsi"] > 55
-            ):
-                size = engine["balance"] * RISK_PER_TRADE
-                entry_price = latest["close"]
+            if trend_filter(symbol) and momentum_entry(symbol):
+                try:
+                    ticker = exchange.fetch_ticker(symbol)
+                    entry_price = ticker['last']
+                except:
+                    continue
 
-                engine["balance"] -= size
+                allocation = cash_balance * POSITION_SIZE
+                if allocation <= 1:
+                    continue
 
-                engine["positions"][symbol] = {
-                    "entry": entry_price,
-                    "size": size
+                cash_balance -= allocation
+
+                open_positions[symbol] = {
+                    'entry': entry_price,
+                    'size': allocation
                 }
 
-                engine["last_action"] = f"Entered {symbol}"
+                last_action = f"Entered {symbol}"
+                break
 
-                if len(engine["positions"]) >= max_pos:
-                    break
 
-# ---- UNREALIZED PNL ----
-def calculate_unrealized():
-    total = 0
-    open_positions = []
+    # === Update Equity ===
+    equity = cash_balance
+    for symbol in open_positions:
+        try:
+            ticker = exchange.fetch_ticker(symbol)
+            current_price = ticker['last']
+            entry = open_positions[symbol]['entry']
+            allocation = open_positions[symbol]['size']
+            change_pct = (current_price - entry) / entry
+            equity += allocation * (1 + change_pct)
+        except:
+            continue
 
-    for symbol, pos in engine["positions"].items():
-        df = fetch_data(symbol)
-        current = df.iloc[-1]["close"]
 
-        pnl = (current - pos["entry"]) / pos["entry"]
-        value = pos["size"] * (1 + pnl)
-        total += value
+def close_position(symbol, change_pct):
+    global cash_balance, total_trades, wins, losses, last_action
 
-        open_positions.append({
-            "symbol": symbol,
-            "entry": round(pos["entry"],4),
-            "current": round(current,4),
-            "pnl_pct": round(pnl * 100,2),
-            "value": round(value,2)
-        })
+    position = open_positions[symbol]
+    allocation = position['size']
 
-    return total, open_positions
+    pnl = allocation * change_pct
+    cash_balance += allocation + pnl
 
-# ---- DASHBOARD ----
-@app.route("/")
+    total_trades += 1
+    if pnl > 0:
+        wins += 1
+    else:
+        losses += 1
+
+    last_exit_time[symbol] = time.time()
+    last_action = f"Closed {symbol} ({round(change_pct*100,2)}%)"
+
+    del open_positions[symbol]
+
+
+# =============================
+# FLASK ROUTE
+# =============================
+
+@app.route('/')
 def dashboard():
-
     evaluate()
-    unrealized_total, open_positions = calculate_unrealized()
-
-    equity = engine["balance"] + unrealized_total
-    roi = ((equity - START_BALANCE) / START_BALANCE) * 100
 
     win_rate = 0
-    if engine["total_trades"] > 0:
-        win_rate = (engine["wins"] / engine["total_trades"]) * 100
+    if total_trades > 0:
+        win_rate = round((wins / total_trades) * 100, 2)
 
-    return render_template_string("""
-    <html>
-    <head>
-        <meta http-equiv="refresh" content="60">
-        <style>
-            body { background:#0b132b; color:white; font-family:Arial; padding:30px; }
-            .card { background:#1c2541; padding:20px; margin-bottom:20px; border-radius:10px; }
-            table { width:100%; }
-            th, td { padding:6px; text-align:left; }
-        </style>
-    </head>
-    <body>
+    roi = round(((equity - START_BALANCE) / START_BALANCE) * 100, 2)
 
-        <h1>🚀 Multi-Coin Momentum Engine</h1>
-
-        <div class="card">
-            <h2>Equity: ${{equity}}</h2>
-            <p>Cash Balance: ${{balance}}</p>
-            <p>ROI: {{roi}}%</p>
-            <p>Last Action: {{last_action}}</p>
-        </div>
-
-        <div class="card">
-            <p>Total Trades: {{total_trades}}</p>
-            <p>Wins: {{wins}}</p>
-            <p>Losses: {{losses}}</p>
-            <p>Win Rate: {{win_rate}}%</p>
-        </div>
-
-        <div class="card">
-            <h3>Open Positions</h3>
-            <table>
-                <tr>
-                    <th>Symbol</th>
-                    <th>Entry</th>
-                    <th>Current</th>
-                    <th>P/L %</th>
-                    <th>Value</th>
-                </tr>
-                {% for p in open_positions %}
-                <tr>
-                    <td>{{p.symbol}}</td>
-                    <td>{{p.entry}}</td>
-                    <td>{{p.current}}</td>
-                    <td>{{p.pnl_pct}}%</td>
-                    <td>${{p.value}}</td>
-                </tr>
-                {% endfor %}
-            </table>
-        </div>
-
-    </body>
-    </html>
-    """,
-    equity=round(equity,2),
-    balance=round(engine["balance"],2),
-    roi=round(roi,2),
-    last_action=engine["last_action"],
-    total_trades=engine["total_trades"],
-    wins=engine["wins"],
-    losses=engine["losses"],
-    win_rate=round(win_rate,2),
-    open_positions=open_positions
+    return render_template(
+        "dashboard.html",
+        equity=round(equity, 2),
+        cash=round(cash_balance, 2),
+        roi=roi,
+        total_trades=total_trades,
+        wins=wins,
+        losses=losses,
+        win_rate=win_rate,
+        positions=open_positions,
+        last_action=last_action
     )
 
+
+# =============================
+# AUTO LOOP
+# =============================
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    while True:
+        evaluate()
+        time.sleep(EVALUATION_INTERVAL)
