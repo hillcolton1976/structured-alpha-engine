@@ -1,112 +1,133 @@
 from flask import Flask, render_template
 import requests
-from datetime import datetime
+import datetime
+import statistics
 
 app = Flask(__name__)
 
-KRAKEN_URL = "https://api.kraken.com/0/public/Ticker"
+COINS = ["BTC", "ETH", "SOL", "XRP", "ADA", "AVAX", "DOT", "LINK", "LTC", "BCH"]
 
-# Focused long-term coins (clean, stable list)
-COINS = {
-    "BTCUSD": "BTC",
-    "ETHUSD": "ETH",
-    "SOLUSD": "SOL",
-    "ADAUSD": "ADA",
-    "XRPUSD": "XRP",
-    "AVAXUSD": "AVAX",
-    "DOTUSD": "DOT",
-    "LINKUSD": "LINK",
-    "LTCUSD": "LTC",
-    "BCHUSD": "BCH"
-}
+def get_market_data(symbol):
+    url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}USDT"
+    response = requests.get(url)
+    data = response.json()
 
-previous_scores = {}
+    price = float(data["lastPrice"])
+    change = float(data["priceChangePercent"])
 
-def get_market_data(pair):
-    try:
-        r = requests.get(KRAKEN_URL, params={"pair": pair}, timeout=5)
-        data = r.json()["result"]
-        key = list(data.keys())[0]
-        info = data[key]
-
-        price = float(info["c"][0])
-        volume = float(info["v"][1])
-        change = float(info["p"][1])  # 24h VWAP approx proxy
-
-        return price, volume, change
-    except:
-        return None, None, None
+    return price, change
 
 
-def calculate_score(price, volume, change):
-    # Long-term weighted score
-    score = 0
-
-    score += change * 0.6
-    score += (volume / 1_000_000) * 0.4
-
-    return round(score, 2)
-
-
-def market_regime():
-    price, volume, change = get_market_data("BTCUSD")
-    if change is None:
+def detect_market_regime(btc_change):
+    if btc_change > 1:
+        return "BULL"
+    elif btc_change < -1:
+        return "BEAR"
+    else:
         return "NEUTRAL"
 
-    if change > 0:
-        return "BULL"
-    else:
-        return "BEAR"
 
+def generate_signal(score, change, regime, volatility):
 
-def generate_signal(symbol, score, regime):
-    prev = previous_scores.get(symbol, 0)
-    delta = score - prev
+    signal_score = 0
 
-    previous_scores[symbol] = score
+    # Regime weight
+    if regime == "BULL":
+        signal_score += 2
+    elif regime == "BEAR":
+        signal_score -= 2
 
-    # BUY conditions
-    if regime == "BULL" and delta > 5:
+    # Momentum weight
+    if change > 2:
+        signal_score += 2
+    elif change > 0.5:
+        signal_score += 1
+    elif change < -2:
+        signal_score -= 2
+    elif change < -0.5:
+        signal_score -= 1
+
+    # Strength weight
+    if score > 50:
+        signal_score += 2
+    elif score > 20:
+        signal_score += 1
+    elif score < 0:
+        signal_score -= 1
+
+    # Volatility penalty
+    if volatility > 5:
+        signal_score -= 1
+
+    if signal_score >= 4:
         return "BUY", "High"
-
-    # SELL conditions
-    if delta < -5:
+    elif signal_score >= 2:
+        return "BUY", "Medium"
+    elif signal_score <= -4:
         return "SELL", "High"
-
-    return "HOLD", "Medium"
+    elif signal_score <= -2:
+        return "SELL", "Medium"
+    else:
+        return "HOLD", "Low"
 
 
 @app.route("/")
-def home():
-    results = []
-    regime = market_regime()
+def index():
 
-    for pair, name in COINS.items():
-        price, volume, change = get_market_data(pair)
-        if price is None:
-            continue
+    btc_price, btc_change = get_market_data("BTC")
+    regime = detect_market_regime(btc_change)
 
-        score = calculate_score(price, volume, change)
-        signal, confidence = generate_signal(name, score, regime)
+    coins_data = []
 
-        results.append({
-            "coin": name,
+    for coin in COINS:
+
+        price, change = get_market_data(coin)
+
+        # Simple strength model
+        score = change * 10
+
+        volatility = abs(change)
+
+        signal, confidence = generate_signal(score, change, regime, volatility)
+
+        # Risk Level
+        if volatility > 5:
+            risk = "High"
+        elif volatility > 2:
+            risk = "Medium"
+        else:
+            risk = "Low"
+
+        # Entry + Take Profit Zones
+        entry = round(price * 0.97, 2)
+        take_profit = round(price * 1.10, 2)
+
+        # Position sizing
+        if confidence == "High":
+            size = "10%"
+        elif confidence == "Medium":
+            size = "5%"
+        else:
+            size = "2%"
+
+        coins_data.append({
+            "coin": coin,
             "price": round(price, 2),
-            "score": score,
+            "score": round(score, 2),
             "signal": signal,
-            "confidence": confidence
+            "confidence": confidence,
+            "entry": entry,
+            "take_profit": take_profit,
+            "risk": risk,
+            "size": size
         })
 
-    results.sort(key=lambda x: x["score"], reverse=True)
+    updated = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    updated = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-
-    return render_template(
-        "index.html",
-        results=results,
-        updated=updated,
-        regime=regime
-    )
+    return render_template("index.html",
+                           coins=coins_data,
+                           regime=regime,
+                           updated=updated)
 
 
 if __name__ == "__main__":
