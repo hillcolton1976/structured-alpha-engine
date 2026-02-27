@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Swing Engine – Capital Builder</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <style>
+        body {
+            background: #0f172a;
+            color: #e2e8f0;
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+
+        .card {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+        }
+
+        .buy { color: #22c55e; }
+        .sell { color: #ef4444; }
+
+        h1 { margin-bottom: 5px; }
+        hr { border: 1px solid #334155; }
+    </style>
+</head>
+<body>
+
+<h1>📈 Swing Engine – Capital Builder</h1>
+<p>Updated: {{ updated }}</p>
+<p>Account Balance: ${{ balance }}</p>
+<p>Stage: {{ stage }}</p>
+
+<div class="card">
+    <h2>🔥 Best Swing Setup (4H)</h2>
+
+    <p><strong>Coin:</strong> {{ setup.coin }}</p>
+    <p><strong>Price:</strong> ${{ setup.price }}</p>
+    <p><strong>Score:</strong> {{ setup.score }}</p>
+
+    {% if setup.signal == "BUY" %}
+        <p class="buy"><strong>Signal: BUY</strong></p>
+    {% else %}
+        <p class="sell"><strong>Signal: SELL</strong></p>
+    {% endif %}
+
+    <hr>
+
+    <p><strong>Entry:</strong> {{ setup.entry }}</p>
+    <p><strong>Take Profit:</strong> {{ setup.take_profit }}</p>
+    <p><strong>Stop Loss:</strong> {{ setup.stop_loss }}</p>
+    <p><strong>Suggested Position Size:</strong> ${{ setup.position_size }}</p>
+</div>
+
+<p style="margin-top:20px;">
+Manual execution on Kraken • One trade at a time • Risk controlled
+</p>
+
+</body>
+</html>
