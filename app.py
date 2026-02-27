@@ -1,107 +1,109 @@
-from flask import Flask, render_template
+from flask import Flask, render_template, jsonify
 import requests
-import statistics
-from datetime import datetime
+import datetime
 
 app = Flask(__name__)
 
-KRAKEN_TICKER = "https://api.kraken.com/0/public/Ticker"
-KRAKEN_OHLC = "https://api.kraken.com/0/public/OHLC"
-KRAKEN_PAIRS = "https://api.kraken.com/0/public/AssetPairs"
+# Major coins only
+COINS = [
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD",
+    "XRPUSD",
+    "ADAUSD",
+    "LINKUSD",
+    "AVAXUSD",
+    "DOTUSD",
+    "LTCUSD",
+    "BCHUSD",
+    "ATOMUSD"
+]
+
+KRAKEN_TICKER_URL = "https://api.kraken.com/0/public/Ticker"
+KRAKEN_OHLC_URL = "https://api.kraken.com/0/public/OHLC"
 
 
-# -------- CLEAN SYMBOL --------
-def clean_symbol(pair):
-    pair = pair.replace("ZUSD", "")
-    pair = pair.replace("USD", "")
-    pair = pair.replace("XBT", "BTC")
-
-    if pair.startswith("X") or pair.startswith("Z"):
-        pair = pair[1:]
-
-    return pair
-
-
-# -------- GET USD PAIRS --------
-def get_usd_pairs():
-    data = requests.get(KRAKEN_PAIRS, timeout=10).json()
-    pairs = []
-
-    for pair, info in data["result"].items():
-        if info.get("quote") == "ZUSD":
-            pairs.append(pair)
-
-    return pairs[:25]  # limit for stability
-
-
-# -------- SMART LONG TERM SCORE --------
-def score_market(pair):
+def get_price(pair):
     try:
-        # Current price
-        ticker = requests.get(KRAKEN_TICKER, params={"pair": pair}, timeout=10).json()
-        price = float(list(ticker["result"].values())[0]["c"][0])
-
-        # 30-day daily candles
-        ohlc = requests.get(
-            KRAKEN_OHLC,
-            params={"pair": pair, "interval": 1440},
-            timeout=10
-        ).json()
-
-        candles = list(ohlc["result"].values())[0][-30:]
-        closes = [float(c[4]) for c in candles]
-
-        if len(closes) < 15:
-            return None
-
-        sma = sum(closes) / len(closes)
-        trend = ((closes[-1] - closes[0]) / closes[0]) * 100
-        position = ((price - sma) / sma) * 100
-        volatility = statistics.stdev(closes)
-
-        score = trend + position - ((volatility / price) * 50)
-
-        if score > 15:
-            strength = "STRONG"
-        elif score > 0:
-            strength = "ACCUMULATION"
-        else:
-            strength = "WEAK"
-
-        return {
-            "coin": clean_symbol(pair),
-            "price": round(price, 2),
-            "score": round(score, 2),
-            "strength": strength
-        }
-
+        r = requests.get(KRAKEN_TICKER_URL, params={"pair": pair}, timeout=10).json()
+        data = list(r["result"].values())[0]
+        return float(data["c"][0])
     except:
         return None
 
 
-# -------- HOME --------
-@app.route("/")
-def home():
-    pairs = get_usd_pairs()
+def get_return(pair, interval, periods_back):
+    try:
+        r = requests.get(
+            KRAKEN_OHLC_URL,
+            params={"pair": pair, "interval": interval},
+            timeout=10
+        ).json()
+
+        candles = list(r["result"].values())[0]
+
+        if len(candles) < periods_back:
+            return 0
+
+        current_close = float(candles[-1][4])
+        past_close = float(candles[-periods_back][4])
+
+        return ((current_close - past_close) / past_close) * 100
+    except:
+        return 0
+
+
+def calculate_scores():
     results = []
 
-    for pair in pairs:
-        result = score_market(pair)
-        if result:
-            results.append(result)
+    btc_30 = get_return("BTCUSD", 1440, 30)
+    btc_90 = get_return("BTCUSD", 1440, 90)
 
-    results = sorted(results, key=lambda x: x["score"], reverse=True)
+    for pair in COINS:
+        price = get_price(pair)
+        if price is None:
+            continue
 
-    buy_list = [c for c in results if c["strength"] in ["STRONG", "ACCUMULATION"]]
-    sell_list = [c for c in results if c["strength"] == "WEAK"]
+        r30 = get_return(pair, 1440, 30)
+        r90 = get_return(pair, 1440, 90)
 
-    return render_template(
-        "index.html",
-        coins=results,
-        buy_list=buy_list,
-        sell_list=sell_list,
-        updated=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    )
+        relative = ((r30 - btc_30) + (r90 - btc_90)) / 2
+
+        score = (r30 * 0.4) + (r90 * 0.4) + (relative * 0.2)
+
+        if score > 25:
+            strength = "STRONG"
+        elif score > 5:
+            strength = "ACCUMULATION"
+        elif score > -5:
+            strength = "NEUTRAL"
+        else:
+            strength = "WEAK"
+
+        results.append({
+            "coin": pair.replace("USD", ""),
+            "price": round(price, 2),
+            "score": round(score, 2),
+            "strength": strength
+        })
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+
+    return results
+
+
+@app.route("/")
+def home():
+    return render_template("index.html")
+
+
+@app.route("/data")
+def data():
+    coins = calculate_scores()
+    return jsonify({
+        "updated": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "coins": coins
+    })
 
 
 if __name__ == "__main__":
