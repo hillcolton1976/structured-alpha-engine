@@ -3,9 +3,10 @@
 <head>
     <title>Structured Alpha Engine</title>
     <meta http-equiv="refresh" content="60">
+
     <style>
         body {
-            font-family: Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial;
             background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
             color: white;
             padding: 40px;
@@ -18,7 +19,11 @@
         .regime {
             font-weight: bold;
             margin-bottom: 20px;
+            font-size: 18px;
         }
+
+        .BULL { color: #4caf50; }
+        .BEAR { color: #f44336; }
 
         table {
             width: 100%;
@@ -32,37 +37,69 @@
             background: rgba(255,255,255,0.1);
             padding: 12px;
             text-align: left;
+            font-size: 14px;
         }
 
         td {
             padding: 12px;
             border-bottom: 1px solid rgba(255,255,255,0.05);
+            font-size: 14px;
         }
 
         tr:hover {
             background: rgba(255,255,255,0.05);
         }
 
-        .BUY { color: #4caf50; font-weight: bold; }
-        .SELL { color: #f44336; font-weight: bold; }
-        .HOLD { color: #ffc107; font-weight: bold; }
+        .BUY {
+            color: #4caf50;
+            font-weight: bold;
+        }
 
-        .High { color: #4caf50; }
-        .Medium { color: #ffc107; }
-        .Low { color: #f44336; }
+        .SELL {
+            color: #f44336;
+            font-weight: bold;
+        }
+
+        .HOLD {
+            color: #ffc107;
+            font-weight: bold;
+        }
+
+        .High {
+            color: #4caf50;
+        }
+
+        .Medium {
+            color: #ffc107;
+        }
+
+        .Low {
+            color: #f44336;
+        }
 
         .footer {
             margin-top: 20px;
             font-size: 14px;
             opacity: 0.7;
         }
+
+        .section-title {
+            margin-top: 30px;
+            margin-bottom: 10px;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
     </style>
 </head>
+
 <body>
 
 <h1>📈 Structured Alpha Engine</h1>
 <div>Updated: {{ updated }}</div>
-<div class="regime">Market Regime: {{ regime }}</div>
+<div class="regime {{ regime }}">Market Regime: {{ regime }}</div>
+
+<div class="section-title">🔥 Top Opportunities</div>
 
 <table>
     <tr>
@@ -87,8 +124,8 @@
         <td class="{{ coin.signal }}">{{ coin.signal }}</td>
         <td class="{{ coin.confidence }}">{{ coin.confidence }}</td>
         <td>
-            {% if coin.stop_loss != "-" %}
-                ${{ coin.stop_loss }}
+            {% if coin.stop != "-" %}
+                ${{ coin.stop }}
             {% else %}
                 -
             {% endif %}
@@ -107,6 +144,7 @@
 </table>
 
 <div class="footer">
+Scanning Top 75 coins by market cap. <br>
 Auto-refreshes every 60 seconds.
 </div>
 
