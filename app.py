@@ -1,128 +1,122 @@
 from flask import Flask, render_template
 from datetime import datetime
-import random
+import requests
+import math
 
 app = Flask(__name__)
 
-# ------------------------
-# Generate Random Score
-# ------------------------
-def generate_score():
-    return round(random.uniform(-100, 100), 2)
+COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
 
-# ------------------------
-# Determine Market Regime
-# ------------------------
-def determine_regime(coins):
-    avg_score = sum(c["score"] for c in coins) / len(coins)
+# -------------------------
+# SIGNAL LOGIC
+# -------------------------
 
-    if avg_score > 10:
-        return "BULL"
-    elif avg_score < -10:
-        return "BEAR"
+def generate_signal(score):
+    if score > 60:
+        return "BUY", "High"
+    elif score > 25:
+        return "BUY", "Medium"
+    elif score > -25:
+        return "HOLD", "Low"
+    elif score > -60:
+        return "SELL", "Medium"
     else:
-        return "SIDEWAYS"
+        return "SELL", "High"
 
-# ------------------------
-# Signal Logic
-# ------------------------
-def generate_signal(score, regime):
-
-    if regime == "BULL":
-        if score > 30:
-            return "BUY", "High"
-        elif score > 10:
-            return "BUY", "Medium"
-        else:
-            return "HOLD", "Low"
-
-    elif regime == "BEAR":
-        if score < -30:
-            return "SELL", "High"
-        elif score < -10:
-            return "SELL", "Medium"
-        else:
-            return "HOLD", "Low"
-
-    return "HOLD", "Low"
-
-# ------------------------
-# Trade Plan Builder
-# ------------------------
 def build_trade_plan(price, signal):
-
     price = float(price)
 
     if signal == "BUY":
-        stop_loss = round(price * 0.97, 2)
-        take_profit = round(price * 1.06, 2)
+        stop = round(price * 0.97, 2)
+        take_profit = round(price * 1.08, 2)
         risk = "2%"
         size = "Full"
-
     elif signal == "SELL":
-        stop_loss = round(price * 1.03, 2)
-        take_profit = round(price * 0.94, 2)
+        stop = round(price * 1.03, 2)
+        take_profit = round(price * 0.92, 2)
         risk = "2%"
         size = "Reduced"
-
     else:
-        stop_loss = "-"
+        stop = "-"
         take_profit = "-"
         risk = "-"
         size = "-"
 
-    return stop_loss, take_profit, risk, size
+    return stop, take_profit, risk, size
 
+# -------------------------
+# SIMPLE MOMENTUM SCORE
+# -------------------------
+
+def calculate_score(coin):
+    change_24h = coin.get("price_change_percentage_24h", 0) or 0
+    change_7d = coin.get("price_change_percentage_7d_in_currency", 0) or 0
+    volume = coin.get("total_volume", 0) or 0
+
+    volume_score = math.log(volume + 1) if volume > 0 else 0
+
+    score = (change_24h * 1.5) + (change_7d * 2) + volume_score
+    return round(score, 2)
+
+# -------------------------
+# MAIN ROUTE
+# -------------------------
 
 @app.route("/")
 def home():
 
-    coins_raw = [
-        ("BTC", 66937.6),
-        ("ETH", 2005.35),
-        ("SOL", 85.43),
-        ("XRP", 1.4),
-        ("ADA", 0.29),
-        ("AVAX", 9.27),
-        ("DOT", 1.6),
-        ("LINK", 9.01),
-        ("LTC", 55.43),
-        ("BCH", 476.84),
-    ]
+    params = {
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": 75,
+        "page": 1,
+        "sparkline": False,
+        "price_change_percentage": "7d"
+    }
+
+    response = requests.get(COINGECKO_URL, params=params)
+    data = response.json()
 
     coins = []
 
-    # First pass: generate scores
-    for name, price in coins_raw:
-        score = generate_score()
+    for coin in data:
+        score = calculate_score(coin)
+        signal, confidence = generate_signal(score)
+        stop, take_profit, risk, size = build_trade_plan(
+            coin["current_price"], signal
+        )
+
         coins.append({
-            "coin": name,
-            "price": price,
-            "score": score
+            "coin": coin["symbol"].upper(),
+            "price": round(coin["current_price"], 4),
+            "score": score,
+            "signal": signal,
+            "confidence": confidence,
+            "stop": stop,
+            "take_profit": take_profit,
+            "risk": risk,
+            "size": size
         })
 
-    # Determine regime
-    regime = determine_regime(coins)
+    # Rank by score
+    coins_sorted = sorted(coins, key=lambda x: x["score"], reverse=True)
 
-    # Second pass: generate signals + trade plans
-    for coin in coins:
-        signal, confidence = generate_signal(coin["score"], regime)
-        stop_loss, take_profit, risk, size = build_trade_plan(coin["price"], signal)
+    # Only show strongest and weakest
+    top_buys = [c for c in coins_sorted if c["signal"] == "BUY"][:10]
+    top_sells = [c for c in reversed(coins_sorted) if c["signal"] == "SELL"][:5]
 
-        coin["signal"] = signal
-        coin["confidence"] = confidence
-        coin["stop_loss"] = stop_loss
-        coin["take_profit"] = take_profit
-        coin["risk"] = risk
-        coin["size"] = size
+    final_coins = top_buys + top_sells
+
+    regime = "BULL" if sum(c["score"] for c in coins) > 0 else "BEAR"
 
     return render_template(
         "index.html",
-        coins=coins,
+        coins=final_coins,
         updated=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
         regime=regime
     )
 
+# -------------------------
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run(debug=True)
