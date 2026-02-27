@@ -1,8 +1,8 @@
 import ccxt
 import pandas as pd
 import numpy as np
-import time
 from flask import Flask, render_template
+import os
 
 app = Flask(__name__)
 
@@ -10,216 +10,153 @@ app = Flask(__name__)
 # CONFIG
 # =============================
 
-START_BALANCE = 50.0
-cash_balance = START_BALANCE
-equity = START_BALANCE
-
+START_BALANCE = 50
+TIMEFRAME = "5m"
+CANDLE_LIMIT = 100
 MAX_POSITIONS = 5
-POSITION_SIZE = 0.14
-STOP_LOSS = -0.006
-TAKE_PROFIT = 0.018
-TRAIL_TRIGGER = 0.01
-COOLDOWN_SECONDS = 300
-EVALUATION_INTERVAL = 60
 
-exchange = ccxt.coinbase()
+exchange = ccxt.kraken()
 
+# =============================
+# GLOBAL STATE
+# =============================
+
+equity = START_BALANCE
+cash = START_BALANCE
 open_positions = {}
-last_exit_time = {}
-
+last_action = "Starting..."
 total_trades = 0
 wins = 0
 losses = 0
-last_action = "Starting..."
 
 # =============================
-# UTILITIES
+# GET TOP 50 USDT PAIRS
 # =============================
 
-def get_top_markets(limit=50):
-    try:
-        markets = exchange.load_markets()
-        pairs = [
-            s for s in markets
-            if "/USDT" in s and markets[s]['active']
-        ]
-        return pairs[:limit]
-    except:
-        return []
+def get_top_50():
+    markets = exchange.load_markets()
+    symbols = [s for s in markets if "/USDT" in s and markets[s]["active"]]
+    return symbols[:50]
 
+TOP_50 = get_top_50()
 
-def fetch_dataframe(symbol, timeframe, limit=100):
+# =============================
+# DATA FETCH
+# =============================
+
+def get_data(symbol):
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        if not ohlcv or len(ohlcv) < 30:
+        ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=CANDLE_LIMIT)
+        df = pd.DataFrame(
+            ohlcv,
+            columns=["timestamp", "open", "high", "low", "close", "volume"]
+        )
+
+        if len(df) < 30:
             return None
-        df = pd.DataFrame(ohlcv, columns=["ts","open","high","low","close","volume"])
+
+        df["ema9"] = df["close"].ewm(span=9).mean()
+        df["ema21"] = df["close"].ewm(span=21).mean()
+        df["ema50"] = df["close"].ewm(span=50).mean()
+
         return df
+
     except:
         return None
 
-
-def ema(series, period):
-    return series.ewm(span=period, adjust=False).mean()
-
-
 # =============================
-# STRATEGY LOGIC (SAFE)
+# STRATEGY
 # =============================
 
 def trend_filter(symbol):
-    df = fetch_dataframe(symbol, '5m', 100)
-    if df is None or len(df) < 60:
+    df = get_data(symbol)
+    if df is None or len(df) < 50:
         return False
-
-    df['ema50'] = ema(df['close'], 50)
-
-    if df['ema50'].isna().any():
-        return False
-
-    if df['close'].iloc[-1] > df['ema50'].iloc[-1]:
-        if df['ema50'].iloc[-1] > df['ema50'].iloc[-2]:
-            return True
-
-    return False
+    return df["ema21"].iloc[-1] > df["ema50"].iloc[-1]
 
 
 def momentum_entry(symbol):
-    df = fetch_dataframe(symbol, '1m', 50)
-    if df is None or len(df) < 25:
+    df = get_data(symbol)
+    if df is None or len(df) < 21:
         return False
+    return df["ema9"].iloc[-1] > df["ema21"].iloc[-1]
 
-    df['ema9'] = ema(df['close'], 9)
-    df['ema21'] = ema(df['close'], 21)
 
-    if df[['ema9','ema21']].isna().any().any():
+def momentum_exit(symbol):
+    df = get_data(symbol)
+    if df is None or len(df) < 21:
         return False
-
-    if len(df) < 3:
-        return False
-
-    if df['ema9'].iloc[-1] > df['ema21'].iloc[-1]:
-        if df['ema9'].iloc[-2] <= df['ema21'].iloc[-2]:
-            return True
-
-    return False
-
+    return df["ema9"].iloc[-1] < df["ema21"].iloc[-1]
 
 # =============================
 # ENGINE
 # =============================
 
 def evaluate():
-    global cash_balance, equity, total_trades, wins, losses, last_action
+    global equity, cash, open_positions
+    global last_action, total_trades, wins, losses
 
-    symbols = get_top_markets()
+    for symbol in TOP_50:
 
-    # --- Manage Positions ---
-    for symbol in list(open_positions.keys()):
-        try:
-            ticker = exchange.fetch_ticker(symbol)
-            current = ticker['last']
-        except:
+        df = get_data(symbol)
+        if df is None:
             continue
 
-        entry = open_positions[symbol]['entry']
-        size = open_positions[symbol]['size']
-        change = (current - entry) / entry
+        price = df["close"].iloc[-1]
 
-        # trailing
-        if change >= TRAIL_TRIGGER:
-            open_positions[symbol]['trail'] = current * 0.995
+        # EXIT
+        if symbol in open_positions:
+            if momentum_exit(symbol):
+                entry_price = open_positions[symbol]["entry"]
+                position_size = open_positions[symbol]["size"]
 
-        if 'trail' in open_positions[symbol]:
-            if current < open_positions[symbol]['trail']:
-                close_position(symbol, change)
-                continue
-            else:
-                open_positions[symbol]['trail'] = max(
-                    open_positions[symbol]['trail'],
-                    current * 0.995
-                )
+                pnl = (price - entry_price) * position_size
+                cash += (position_size * price)
+                equity = cash
 
-        if change <= STOP_LOSS:
-            close_position(symbol, change)
-            continue
+                total_trades += 1
 
-        if change >= TAKE_PROFIT:
-            close_position(symbol, change)
-            continue
+                if pnl > 0:
+                    wins += 1
+                else:
+                    losses += 1
 
-    # --- Open New Positions ---
-    if len(open_positions) < MAX_POSITIONS:
-        for symbol in symbols:
-
-            if symbol in open_positions:
+                del open_positions[symbol]
+                last_action = f"Exited {symbol}"
                 continue
 
-            if symbol in last_exit_time:
-                if time.time() - last_exit_time[symbol] < COOLDOWN_SECONDS:
-                    continue
+        # ENTRY
+        if len(open_positions) >= MAX_POSITIONS:
+            continue
 
+        if symbol not in open_positions:
             if trend_filter(symbol) and momentum_entry(symbol):
-                try:
-                    ticker = exchange.fetch_ticker(symbol)
-                    entry = ticker['last']
-                except:
-                    continue
 
-                allocation = cash_balance * POSITION_SIZE
-                if allocation <= 1:
-                    continue
-
-                cash_balance -= allocation
+                position_value = cash / (MAX_POSITIONS - len(open_positions))
+                size = position_value / price
 
                 open_positions[symbol] = {
-                    'entry': entry,
-                    'size': allocation
+                    "entry": price,
+                    "size": size
                 }
 
+                cash -= position_value
                 last_action = f"Entered {symbol}"
-                break
 
-    # --- Update Equity ---
-    equity = cash_balance
-    for symbol in open_positions:
-        try:
-            ticker = exchange.fetch_ticker(symbol)
-            current = ticker['last']
-            entry = open_positions[symbol]['entry']
-            size = open_positions[symbol]['size']
-            change = (current - entry) / entry
-            equity += size * (1 + change)
-        except:
+    # Update equity
+    equity = cash
+    for symbol, pos in open_positions.items():
+        df = get_data(symbol)
+        if df is None:
             continue
-
-
-def close_position(symbol, change):
-    global cash_balance, total_trades, wins, losses, last_action
-
-    pos = open_positions[symbol]
-    size = pos['size']
-    pnl = size * change
-
-    cash_balance += size + pnl
-
-    total_trades += 1
-    if pnl > 0:
-        wins += 1
-    else:
-        losses += 1
-
-    last_exit_time[symbol] = time.time()
-    last_action = f"Closed {symbol} ({round(change*100,2)}%)"
-
-    del open_positions[symbol]
-
+        current_price = df["close"].iloc[-1]
+        equity += pos["size"] * current_price
 
 # =============================
-# FLASK
+# DASHBOARD
 # =============================
 
-@app.route('/')
+@app.route("/")
 def dashboard():
     evaluate()
 
@@ -228,19 +165,19 @@ def dashboard():
 
     return render_template(
         "dashboard.html",
-        equity=round(equity, 2),
-        cash=round(cash_balance, 2),
+        balance=round(equity, 2),
         roi=roi,
+        last_action=last_action,
         total_trades=total_trades,
         wins=wins,
         losses=losses,
         win_rate=win_rate,
-        positions=open_positions,
-        last_action=last_action
+        positions=open_positions
     )
 
+# =============================
+# RUN
+# =============================
 
 if __name__ == "__main__":
-    while True:
-        evaluate()
-        time.sleep(EVALUATION_INTERVAL)
+    app.run(host="0.0.0.0", port=8080)
