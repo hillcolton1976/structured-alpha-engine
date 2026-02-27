@@ -1,65 +1,48 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Swing Engine – Capital Builder</title>
-    <meta http-equiv="refresh" content="60">
-    <style>
-        body {
-            font-family: Arial;
-            background: #0e1117;
-            color: #e6edf3;
-            padding: 40px;
-        }
-
-        h1 { margin-bottom: 5px; }
-
-        .card {
-            background: #161b22;
-            padding: 25px;
-            border-radius: 10px;
-            margin-top: 30px;
-            width: 600px;
-        }
-
-        .BUY { color: #22c55e; font-weight: bold; font-size: 20px; }
-        .SELL { color: #ef4444; font-weight: bold; font-size: 20px; }
-        .NO { color: #facc15; font-weight: bold; font-size: 20px; }
-
-        .footer {
-            margin-top: 40px;
-            opacity: 0.6;
-        }
-    </style>
+<title>Swing Engine</title>
+<meta http-equiv="refresh" content="60">
+<style>
+body { background:#0e1117; color:white; font-family:Arial; padding:40px; }
+.card { background:#161b22; padding:25px; border-radius:10px; width:400px; }
+.buy { color:#22c55e; font-weight:bold; }
+.sell { color:#ef4444; font-weight:bold; }
+.notrade { color:#facc15; font-weight:bold; }
+</style>
 </head>
 <body>
 
-<h1>📈 Swing Engine – Capital Builder</h1>
+<h1>📈 Swing Engine – Kraken 4H</h1>
 <div>Updated: {{ updated }}</div>
 <div>Account Balance: ${{ balance }}</div>
-<div>{{ stage }}</div>
 
+{% if best %}
 <div class="card">
-    <h2>🔥 Best Swing Setup</h2>
+<h2>🔥 Best Setup</h2>
+<p>Coin: {{ best.symbol }}</p>
+<p>Price: ${{ best.price }}</p>
+<p>Score: {{ best.score }}</p>
 
-    <p><strong>Coin:</strong> {{ symbol }}</p>
-    <p><strong>Price:</strong> ${{ price }}</p>
-    <p><strong>Score:</strong> {{ score }}</p>
+<p>Signal:
+<span class="{% if best.signal == 'BUY' %}buy{% elif best.signal == 'SELL' %}sell{% else %}notrade{% endif %}">
+{{ best.signal }}
+</span>
+</p>
 
-    <p><strong>Signal:</strong> 
-        <span class="{{ signal }}">{{ signal }}</span>
-    </p>
+<hr>
 
-    <hr>
+<p>Entry: {{ best.entry }}</p>
+<p>Take Profit: {{ best.take }}</p>
+<p>Stop Loss: {{ best.stop }}</p>
+<p>Suggested Size: ${{ best.size }}</p>
 
-    <p><strong>Entry:</strong> {{ entry }}</p>
-    <p><strong>Take Profit:</strong> {{ take_profit }}</p>
-    <p><strong>Stop Loss:</strong> {{ stop_loss }}</p>
-    <p><strong>Suggested Position Size:</strong> ${{ size }}</p>
 </div>
+{% endif %}
 
-<div class="footer">
-Manual execution on Kraken • One trade at a time • Risk controlled
-</div>
+<p style="opacity:0.6;margin-top:30px;">
+Manual execution on Kraken • 4H swing logic • 5% risk
+</p>
 
 </body>
 </html>
