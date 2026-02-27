@@ -1,6 +1,5 @@
 import ccxt
 import pandas as pd
-import time
 from flask import Flask, render_template_string
 
 app = Flask(__name__)
@@ -12,15 +11,14 @@ SYMBOLS = ["BTC/USDT","ETH/USDT","XRP/USDT","BNB/USDT","ADA/USDT"]
 TIMEFRAME_ENTRY = "1m"
 TIMEFRAME_TREND = "5m"
 
-TP_PERCENT = 0.004      # 0.4%
-SL_PERCENT = 0.0025     # 0.25%
-TRAIL_PERCENT = 0.0025
+TP_PERCENT = 0.004
+SL_PERCENT = 0.0025
 
 POSITION_SIZE = 10
 START_BALANCE = 50
 
 # ==============================
-# GLOBAL STATE
+# STATE
 # ==============================
 balance = START_BALANCE
 positions = {}
@@ -30,12 +28,10 @@ losses = 0
 last_action = "Starting..."
 recent_signals = []
 
-exchange = ccxt.kraken({
-    "enableRateLimit": True
-})
+exchange = ccxt.kraken({"enableRateLimit": True})
 
 # ==============================
-# DATA FETCH
+# DATA
 # ==============================
 def get_df(symbol, timeframe, limit=100):
     try:
@@ -73,7 +69,7 @@ def compute_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 # ==============================
-# STRATEGY LOGIC
+# STRATEGY
 # ==============================
 def trend_filter(symbol):
     df = get_df(symbol, TIMEFRAME_TREND)
@@ -86,25 +82,22 @@ def momentum_entry(symbol):
     if df is None:
         return False
 
-    # fresh EMA cross
     if not (
         df["ema9"].iloc[-1] > df["ema21"].iloc[-1] and
         df["ema9"].iloc[-2] <= df["ema21"].iloc[-2]
     ):
         return False
 
-    # RSI filter
     if not (55 < df["rsi"].iloc[-1] < 70):
         return False
 
-    # volume spike
     if df["volume"].iloc[-1] < df["vol_avg"].iloc[-1] * 1.5:
         return False
 
     return True
 
 # ==============================
-# TRADE MANAGEMENT
+# MANAGEMENT
 # ==============================
 def check_positions():
     global balance, wins, losses, total_trades, last_action
@@ -114,25 +107,21 @@ def check_positions():
         if df is None:
             continue
 
-        current_price = df["close"].iloc[-1]
+        current = df["close"].iloc[-1]
         entry = positions[symbol]["entry"]
         size = positions[symbol]["size"]
 
-        change = (current_price - entry) / entry
+        change = (current - entry) / entry
 
-        # Take Profit
         if change >= TP_PERCENT:
-            profit = size * change
-            balance += size + profit
+            balance += size + size * change
             wins += 1
             total_trades += 1
             last_action = f"TP hit {symbol}"
             del positions[symbol]
 
-        # Stop Loss
         elif change <= -SL_PERCENT:
-            loss_amount = size * abs(change)
-            balance -= loss_amount
+            balance -= size * abs(change)
             losses += 1
             total_trades += 1
             last_action = f"SL hit {symbol}"
@@ -178,29 +167,66 @@ def dashboard():
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
 
     return render_template_string("""
-    <body style="background:black;color:#00ff00;font-family:monospace">
+    <html>
+    <head>
+        <meta http-equiv="refresh" content="60">
+        <style>
+            body {
+                background: #0f172a;
+                color: #e2e8f0;
+                font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+                padding: 20px;
+            }
+            .card {
+                background: #1e293b;
+                padding: 20px;
+                border-radius: 12px;
+                margin-bottom: 20px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            }
+            h1 { color: #38bdf8; }
+            h2 { color: #a78bfa; margin-bottom: 10px; }
+            .stat { font-size: 18px; margin: 5px 0; }
+        </style>
+    </head>
+    <body>
+
     <h1>🚀 Hybrid Momentum Engine</h1>
 
-    <h3>Balance: ${{balance}}</h3>
-    <p>ROI: {{roi}}%</p>
-    <p>Last Action: {{last_action}}</p>
+    <div class="card">
+        <div class="stat"><b>Balance:</b> ${{balance}}</div>
+        <div class="stat"><b>ROI:</b> {{roi}}%</div>
+        <div class="stat"><b>Last Action:</b> {{last_action}}</div>
+    </div>
 
-    <h2>Stats</h2>
-    <p>Trades: {{total_trades}}</p>
-    <p>Wins: {{wins}}</p>
-    <p>Losses: {{losses}}</p>
-    <p>Win Rate: {{win_rate}}%</p>
+    <div class="card">
+        <h2>Performance</h2>
+        <div class="stat">Trades: {{total_trades}}</div>
+        <div class="stat">Wins: {{wins}}</div>
+        <div class="stat">Losses: {{losses}}</div>
+        <div class="stat">Win Rate: {{win_rate}}%</div>
+    </div>
 
-    <h2>Open Positions</h2>
-    {% for sym,pos in positions.items() %}
-        <p>{{sym}} @ {{pos.entry}}</p>
-    {% endfor %}
+    <div class="card">
+        <h2>Open Positions</h2>
+        {% for sym,pos in positions.items() %}
+            <div>{{sym}} @ {{pos.entry}}</div>
+        {% else %}
+            <div>No open positions</div>
+        {% endfor %}
+    </div>
 
-    <h2>Recent Signals</h2>
-    {% for s in signals %}
-        <p>{{s}}</p>
-    {% endfor %}
+    <div class="card">
+        <h2>Recent Signals</h2>
+        {% for s in signals %}
+            <div>{{s}}</div>
+        {% else %}
+            <div>No signals yet</div>
+        {% endfor %}
+    </div>
+
     </body>
+    </html>
     """,
     balance=round(balance,2),
     roi=round(roi,2),
