@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Trading Simulator</title>
+    <style>
+        body {
+            background-color: #0f172a;
+            color: #e2e8f0;
+            font-family: Arial;
+            padding: 30px;
+        }
+
+        .card {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 12px;
+            max-width: 400px;
+        }
+
+        button {
+            padding: 10px 20px;
+            margin: 10px 5px 0 0;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .win {
+            background-color: #16a34a;
+            color: white;
+        }
+
+        .loss {
+            background-color: #dc2626;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+
+<h1>📊 4H Trading Simulator</h1>
+<p>Updated: {{ updated }}</p>
+
+<div class="card">
+    <p><strong>Balance:</strong> ${{ balance }}</p>
+    <p><strong>Wins:</strong> {{ wins }}</p>
+    <p><strong>Losses:</strong> {{ losses }}</p>
+    <p><strong>Win Rate:</strong> {{ win_rate }}%</p>
+
+    <form method="POST">
+        <button name="result" value="win" class="win">WIN</button>
+        <button name="result" value="loss" class="loss">LOSS</button>
+    </form>
+</div>
+
+</body>
+</html>
