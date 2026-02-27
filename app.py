@@ -1,109 +1,94 @@
 from flask import Flask, render_template
 from datetime import datetime
 import random
-import os
 
 app = Flask(__name__)
 
-# -----------------------------
-# SIGNAL ENGINE
-# -----------------------------
-
-def generate_signal():
-    alignment = random.randint(-3, 3)
-
-    if alignment >= 2:
-        signal = "BUY"
-    elif alignment <= -2:
-        signal = "SELL"
+# ===== ACCOUNT STAGES =====
+def account_stage(balance):
+    if balance < 200:
+        return "Stage 1: $50 → $200 (Aggressive Growth)"
+    elif balance < 1000:
+        return "Stage 2: $200 → $1,000 (Structured Growth)"
     else:
-        signal = "HOLD"
+        return "Stage 3: $1,000+ (Capital Preservation)"
 
-    rsi = round(random.uniform(20, 80), 1)
+# ===== SWING SIGNAL ENGINE =====
+def swing_signal(score):
+    if score > 60:
+        return "BUY"
+    elif score < -60:
+        return "SELL"
+    else:
+        return "NO TRADE"
 
-    return signal, alignment, rsi
+# ===== TRADE PLAN =====
+def trade_plan(price, signal, balance):
+    risk_percent = 0.05 if balance < 200 else 0.03
 
+    if signal == "BUY":
+        entry = round(price, 2)
+        take_profit = round(price * 1.10, 2)
+        stop_loss = round(price * 0.94, 2)
+        position_size = round(balance * risk_percent, 2)
+    elif signal == "SELL":
+        entry = round(price, 2)
+        take_profit = round(price * 0.90, 2)
+        stop_loss = round(price * 1.06, 2)
+        position_size = round(balance * risk_percent, 2)
+    else:
+        entry = "-"
+        take_profit = "-"
+        stop_loss = "-"
+        position_size = "-"
 
-# -----------------------------
-# PORTFOLIO SIM ENGINE
-# -----------------------------
-
-def run_portfolio_sim(start_balance=50):
-
-    balance = start_balance
-    wins = 0
-    losses = 0
-    max_balance = balance
-    max_drawdown = 0
-
-    target = 200 if balance < 200 else 1000
-
-    while balance < target:
-
-        risk = balance * 0.02
-        reward = risk * 1.8
-
-        win = random.random() < 0.47
-
-        if win:
-            balance += reward
-            wins += 1
-        else:
-            balance -= risk
-            losses += 1
-
-        max_balance = max(max_balance, balance)
-        drawdown = (max_balance - balance) / max_balance
-        max_drawdown = max(max_drawdown, drawdown)
-
-        if balance <= 0:
-            break
-
-    return {
-        "start": start_balance,
-        "end": round(balance, 2),
-        "wins": wins,
-        "losses": losses,
-        "winrate": round((wins / (wins + losses)) * 100, 1) if (wins + losses) > 0 else 0,
-        "drawdown": round(max_drawdown * 100, 2),
-        "target": target
-    }
-
-
-# -----------------------------
-# ROUTES
-# -----------------------------
+    return entry, take_profit, stop_loss, position_size
 
 @app.route("/")
 def home():
 
-    coins = ["BTC","ETH","SOL","XRP","ADA","AVAX","DOT","LINK","LTC","BCH"]
+    balance = 50  # starting balance
+    stage = account_stage(balance)
 
-    results = []
+    coins = [
+        ("BTC", 67000),
+        ("ETH", 2000),
+        ("SOL", 90),
+        ("XRP", 0.55),
+        ("ADA", 0.35),
+        ("AVAX", 28),
+        ("LINK", 15),
+        ("LTC", 70),
+        ("BCH", 450),
+    ]
 
-    for coin in coins:
-        price = round(random.uniform(0.5, 70000), 2)
-        signal, alignment, rsi = generate_signal()
+    scored = []
 
-        results.append({
-            "symbol": coin,
-            "price": price,
-            "signal": signal,
-            "alignment": alignment,
-            "rsi": rsi
-        })
+    for name, price in coins:
+        score = random.uniform(-100, 100)
+        scored.append((name, price, score))
 
-    sim = run_portfolio_sim(50)
+    # Pick strongest swing only
+    best = max(scored, key=lambda x: abs(x[2]))
+    symbol, price, score = best
+
+    signal = swing_signal(score)
+    entry, tp, sl, size = trade_plan(price, signal, balance)
 
     return render_template(
         "index.html",
-        results=results,
-        sim=sim,
+        symbol=symbol,
+        price=price,
+        score=round(score, 2),
+        signal=signal,
+        entry=entry,
+        take_profit=tp,
+        stop_loss=sl,
+        size=size,
+        balance=balance,
+        stage=stage,
         updated=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
     )
 
-
-# REQUIRED FOR RAILWAY
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(debug=True)
