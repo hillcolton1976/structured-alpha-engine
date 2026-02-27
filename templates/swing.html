@@ -1,62 +1,40 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Swing Engine – Capital Builder</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+@app.route("/")
+def swing():
 
-    <style>
-        body {
-            background: #0f172a;
-            color: #e2e8f0;
-            font-family: Arial, sans-serif;
-            padding: 20px;
-        }
+    balance = 50
+    updated = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
-        .card {
-            background: #1e293b;
-            padding: 20px;
-            border-radius: 10px;
-            margin-top: 20px;
-        }
+    # Example market setup (mocked for now)
+    price = 284.15
+    score = 87.96
 
-        .buy { color: #22c55e; }
-        .sell { color: #ef4444; }
+    # Risk model
+    risk_percent = 0.05   # risk 5% of account
+    reward_ratio = 2      # 2R target
 
-        h1 { margin-bottom: 5px; }
-        hr { border: 1px solid #334155; }
-    </style>
-</head>
-<body>
+    risk_amount = balance * risk_percent
+    stop_loss = round(price - (price * 0.03), 2)
+    take_profit = round(price + ((price - stop_loss) * reward_ratio), 2)
 
-<h1>📈 Swing Engine – Capital Builder</h1>
-<p>Updated: {{ updated }}</p>
-<p>Account Balance: ${{ balance }}</p>
-<p>Stage: {{ stage }}</p>
+    position_size = round(risk_amount / (price - stop_loss), 2)
 
-<div class="card">
-    <h2>🔥 Best Swing Setup (4H)</h2>
+    setup = {
+        "coin": "DOT",
+        "price": price,
+        "score": score,
+        "signal": "BUY",
+        "entry": price,
+        "take_profit": take_profit,
+        "stop_loss": stop_loss,
+        "position_size": position_size
+    }
 
-    <p><strong>Coin:</strong> {{ setup.coin }}</p>
-    <p><strong>Price:</strong> ${{ setup.price }}</p>
-    <p><strong>Score:</strong> {{ setup.score }}</p>
+    stage = "Stage 1: $50 → $200 (Aggressive Growth)"
 
-    {% if setup.signal == "BUY" %}
-        <p class="buy"><strong>Signal: BUY</strong></p>
-    {% else %}
-        <p class="sell"><strong>Signal: SELL</strong></p>
-    {% endif %}
-
-    <hr>
-
-    <p><strong>Entry:</strong> {{ setup.entry }}</p>
-    <p><strong>Take Profit:</strong> {{ setup.take_profit }}</p>
-    <p><strong>Stop Loss:</strong> {{ setup.stop_loss }}</p>
-    <p><strong>Suggested Position Size:</strong> ${{ setup.position_size }}</p>
-</div>
-
-<p style="margin-top:20px;">
-Manual execution on Kraken • One trade at a time • Risk controlled
-</p>
-
-</body>
-</html>
+    return render_template(
+        "swing.html",
+        updated=updated,
+        balance=balance,
+        stage=stage,
+        setup=setup
+    )
