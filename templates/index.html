@@ -2,41 +2,31 @@
 <html>
 <head>
     <title>Long-Term Crypto Strength</title>
-    <meta http-equiv="refresh" content="60">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <style>
         body {
-            font-family: Arial;
-            background: linear-gradient(135deg,#0f2027,#203a43,#2c5364);
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
             color: white;
-            padding: 40px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 20px;
         }
 
         h1 {
-            color: #4da6ff;
+            font-size: 32px;
+            margin-bottom: 5px;
         }
 
         .updated {
-            margin-bottom: 20px;
             opacity: 0.7;
+            margin-bottom: 25px;
         }
-
-        .buttons {
-            margin-bottom: 20px;
-        }
-
-        button {
-            padding: 10px 20px;
-            border-radius: 8px;
-            border: none;
-            margin-right: 10px;
-            cursor: pointer;
-            font-weight: bold;
-        }
-
-        .buy { background: #2ecc71; color: white; }
-        .sell { background: #e74c3c; color: white; }
-        .all { background: #3498db; color: white; }
 
         table {
             width: 100%;
@@ -46,85 +36,93 @@
             overflow: hidden;
         }
 
-        th, td {
-            padding: 12px;
-            text-align: center;
-        }
-
         th {
             background: rgba(255,255,255,0.1);
+            padding: 12px;
+            text-align: left;
+        }
+
+        td {
+            padding: 12px;
         }
 
         tr:nth-child(even) {
-            background: rgba(255,255,255,0.05);
+            background: rgba(255,255,255,0.03);
         }
 
-        .STRONG { color: #2ecc71; font-weight: bold; }
-        .ACCUMULATION { color: #f1c40f; font-weight: bold; }
-        .WEAK { color: #e74c3c; font-weight: bold; }
+        .strong { color: #2ecc71; font-weight: bold; }
+        .accumulation { color: #f1c40f; font-weight: bold; }
+        .neutral { color: #bdc3c7; }
+        .weak { color: #e74c3c; font-weight: bold; }
+
+        .refresh {
+            margin-top: 20px;
+            padding: 10px 15px;
+            background: #3498db;
+            border: none;
+            border-radius: 6px;
+            color: white;
+            cursor: pointer;
+        }
+
+        .refresh:hover {
+            opacity: 0.9;
+        }
     </style>
-
-    <script>
-        function showAll() {
-            document.querySelectorAll("tbody tr").forEach(r => r.style.display = "");
-        }
-
-        function showBuy() {
-            document.querySelectorAll("tbody tr").forEach(r => {
-                if (r.dataset.type === "STRONG" || r.dataset.type === "ACCUMULATION")
-                    r.style.display = "";
-                else
-                    r.style.display = "none";
-            });
-        }
-
-        function showSell() {
-            document.querySelectorAll("tbody tr").forEach(r => {
-                if (r.dataset.type === "WEAK")
-                    r.style.display = "";
-                else
-                    r.style.display = "none";
-            });
-        }
-    </script>
 </head>
-
 <body>
 
-<h1>📈 Long-Term Crypto Strength</h1>
+<div class="container">
+    <h1>📈 Long-Term Crypto Strength</h1>
+    <div class="updated" id="updated">Loading...</div>
 
-<div class="updated">
-    Updated: {{ updated }}
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Coin</th>
+                <th>Price</th>
+                <th>Score</th>
+                <th>Strength</th>
+            </tr>
+        </thead>
+        <tbody id="table-body"></tbody>
+    </table>
+
+    <button class="refresh" onclick="loadData()">Refresh</button>
 </div>
 
-<div class="buttons">
-    <button class="buy" onclick="showBuy()">Buy Candidates</button>
-    <button class="sell" onclick="showSell()">Sell Candidates</button>
-    <button class="all" onclick="showAll()">Show All</button>
-</div>
+<script>
+async function loadData() {
+    const response = await fetch("/data");
+    const data = await response.json();
 
-<table>
-    <thead>
-        <tr>
-            <th>#</th>
-            <th>Coin</th>
-            <th>Price</th>
-            <th>Score</th>
-            <th>Strength</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for coin in coins %}
-        <tr data-type="{{ coin.strength }}">
-            <td>{{ loop.index }}</td>
-            <td>{{ coin.coin }}</td>
-            <td>${{ coin.price }}</td>
-            <td>{{ coin.score }}</td>
-            <td class="{{ coin.strength }}">{{ coin.strength }}</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
+    document.getElementById("updated").innerText =
+        "Updated: " + data.updated;
+
+    const table = document.getElementById("table-body");
+    table.innerHTML = "";
+
+    data.coins.forEach((coin, index) => {
+        const row = document.createElement("tr");
+
+        let strengthClass = coin.strength.toLowerCase();
+
+        row.innerHTML = `
+            <td>${index + 1}</td>
+            <td>${coin.coin}</td>
+            <td>$${coin.price}</td>
+            <td>${coin.score}</td>
+            <td class="${strengthClass}">${coin.strength}</td>
+        `;
+
+        table.appendChild(row);
+    });
+}
+
+loadData();
+setInterval(loadData, 60000);
+</script>
 
 </body>
 </html>
