@@ -1,119 +1,68 @@
 from flask import Flask, render_template
-import requests
-import datetime
-import statistics
+from datetime import datetime
+import random
 
 app = Flask(__name__)
 
-COINS = ["BTC", "ETH", "SOL", "XRP", "ADA", "AVAX", "DOT", "LINK", "LTC", "BCH"]
-
-def get_market_data(symbol):
-    url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}USDT"
-    response = requests.get(url)
-    data = response.json()
-
-    price = float(data["lastPrice"])
-    change = float(data["priceChangePercent"])
-
-    return price, change
-
-
-def detect_market_regime(btc_change):
-    if btc_change > 1:
-        return "BULL"
-    elif btc_change < -1:
-        return "BEAR"
-    else:
-        return "NEUTRAL"
-
-
-def generate_signal(score, change, regime, volatility):
-
-    signal_score = 0
-
-    # Regime weight
-    if regime == "BULL":
-        signal_score += 2
-    elif regime == "BEAR":
-        signal_score -= 2
-
-    # Momentum weight
-    if change > 2:
-        signal_score += 2
-    elif change > 0.5:
-        signal_score += 1
-    elif change < -2:
-        signal_score -= 2
-    elif change < -0.5:
-        signal_score -= 1
-
-    # Strength weight
+def generate_signal(score):
     if score > 50:
-        signal_score += 2
-    elif score > 20:
-        signal_score += 1
-    elif score < 0:
-        signal_score -= 1
-
-    # Volatility penalty
-    if volatility > 5:
-        signal_score -= 1
-
-    if signal_score >= 4:
         return "BUY", "High"
-    elif signal_score >= 2:
+    elif score > 10:
         return "BUY", "Medium"
-    elif signal_score <= -4:
-        return "SELL", "High"
-    elif signal_score <= -2:
+    elif score > -10:
+        return "HOLD", "Medium"
+    elif score > -30:
         return "SELL", "Medium"
     else:
-        return "HOLD", "Low"
+        return "SELL", "High"
 
+def build_trade_plan(price, signal):
+    price = float(price)
+
+    if signal == "BUY":
+        entry = round(price, 2)
+        take_profit = round(price * 1.08, 2)
+        risk = "2%"
+        size = "Full"
+    elif signal == "SELL":
+        entry = round(price, 2)
+        take_profit = round(price * 0.92, 2)
+        risk = "2%"
+        size = "Reduced"
+    else:
+        entry = "-"
+        take_profit = "-"
+        risk = "-"
+        size = "-"
+
+    return entry, take_profit, risk, size
 
 @app.route("/")
-def index():
+def home():
+    coins_raw = [
+        ("BTC", 66937.6),
+        ("ETH", 2005.35),
+        ("SOL", 85.43),
+        ("XRP", 1.4),
+        ("ADA", 0.29),
+        ("AVAX", 9.27),
+        ("DOT", 1.6),
+        ("LINK", 9.01),
+        ("LTC", 55.43),
+        ("BCH", 476.84),
+    ]
 
-    btc_price, btc_change = get_market_data("BTC")
-    regime = detect_market_regime(btc_change)
+    coins = []
 
-    coins_data = []
+    for name, price in coins_raw:
+        score = round(random.uniform(-100, 100), 2)
+        signal, confidence = generate_signal(score)
+        entry, take_profit, risk, size = build_trade_plan(price, signal)
 
-    for coin in COINS:
-
-        price, change = get_market_data(coin)
-
-        # Simple strength model
-        score = change * 10
-
-        volatility = abs(change)
-
-        signal, confidence = generate_signal(score, change, regime, volatility)
-
-        # Risk Level
-        if volatility > 5:
-            risk = "High"
-        elif volatility > 2:
-            risk = "Medium"
-        else:
-            risk = "Low"
-
-        # Entry + Take Profit Zones
-        entry = round(price * 0.97, 2)
-        take_profit = round(price * 1.10, 2)
-
-        # Position sizing
-        if confidence == "High":
-            size = "10%"
-        elif confidence == "Medium":
-            size = "5%"
-        else:
-            size = "2%"
-
-        coins_data.append({
-            "coin": coin,
-            "price": round(price, 2),
-            "score": round(score, 2),
+        coins.append({
+            "coin": name,
+            "price": price,
+            "score": score,
             "signal": signal,
             "confidence": confidence,
             "entry": entry,
@@ -122,13 +71,14 @@ def index():
             "size": size
         })
 
-    updated = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    regime = "BULL" if sum(c["score"] for c in coins) > 0 else "BEAR"
 
-    return render_template("index.html",
-                           coins=coins_data,
-                           regime=regime,
-                           updated=updated)
-
+    return render_template(
+        "index.html",
+        coins=coins,
+        updated=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        regime=regime
+    )
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run(debug=True)
