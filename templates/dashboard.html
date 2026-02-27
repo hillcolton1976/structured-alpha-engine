@@ -1,61 +1,78 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Rotation Auto Engine</title>
+    <title>Dynamic Rotation Engine</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body {
             background-color: #0f172a;
             color: #e2e8f0;
-            font-family: Arial;
+            font-family: Arial, sans-serif;
             padding: 20px;
         }
         .card {
             background: #1e293b;
             padding: 20px;
+            border-radius: 12px;
             margin-bottom: 20px;
-            border-radius: 10px;
         }
-        .profit { color: #22c55e; }
-        .loss { color: #ef4444; }
+        h1 {
+            margin-bottom: 20px;
+        }
+        .green { color: #22c55e; }
+        .red { color: #ef4444; }
+        .yellow { color: #facc15; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+        }
+        tr {
+            border-bottom: 1px solid #334155;
+        }
     </style>
 </head>
 <body>
 
-<h2>🚀 Dynamic Rotation Engine</h2>
+<h1>🚀 Dynamic Rotation Engine</h1>
 
 <div class="card">
-    <h3>Balance: ${{ engine.balance }}</h3>
-    <h3>ROI: {{ stats.roi }}%</h3>
-    <h3>Level: {{ engine.level }}</h3>
-    <h3>Last Action: {{ engine.last_action }}</h3>
+    <h3>Balance: ${{ balance }}</h3>
+    <p>ROI: {{ roi }}%</p>
+    <p>Level: {{ level }}</p>
+    <p>Last Action: <span class="yellow">{{ last_action }}</span></p>
 </div>
 
 <div class="card">
     <h3>Performance</h3>
-    <p>Total Trades: {{ stats.total_trades }}</p>
-    <p>Win Rate: {{ stats.win_rate }}%</p>
-    <p>Total Profit: {{ stats.total_profit }}</p>
-    <p>Average Win: {{ stats.avg_win }}</p>
-    <p>Average Loss: {{ stats.avg_loss }}</p>
-    <p>Max Drawdown: {{ stats.max_drawdown }}%</p>
+    <p>Total Trades: {{ total_trades }}</p>
+    <p>Win Rate: {{ win_rate }}%</p>
+    <p>Total Profit: ${{ total_profit }}</p>
+    <p>Max Drawdown: {{ max_drawdown }}%</p>
 </div>
 
 <div class="card">
     <h3>Recent Trades</h3>
-    {% for trade in engine.trades[-10:] %}
-        <p>
-            {{ trade.symbol }} →
-            <span class="{{ 'profit' if trade.profit > 0 else 'loss' }}">
-                {{ trade.profit | round(2) }}
-            </span>
-        </p>
-    {% endfor %}
+    <table>
+        <tr>
+            <th>Symbol</th>
+            <th>Result</th>
+            <th>Balance</th>
+        </tr>
+        {% for trade in trades %}
+        <tr>
+            <td>{{ trade.symbol }}</td>
+            <td class="{{ 'green' if trade.result == 'WIN' else 'red' }}">
+                {{ trade.result }}
+            </td>
+            <td>${{ trade.balance }}</td>
+        </tr>
+        {% endfor %}
+    </table>
 </div>
-
-<script>
-setTimeout(() => { location.reload(); }, 15000);
-</script>
 
 </body>
 </html>
