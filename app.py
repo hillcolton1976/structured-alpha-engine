@@ -12,7 +12,7 @@ app = Flask(__name__)
 # =============================
 
 START_BALANCE = 50
-RISK_PER_TRADE = 0.10  # 10%
+RISK_PER_TRADE = 0.10
 LEVEL_TARGETS = [200, 1000, 5000, 10000]
 
 SYMBOLS = [
@@ -29,12 +29,14 @@ SYMBOLS = [
 
 engine = {
     "balance": START_BALANCE,
+    "peak_balance": START_BALANCE,
     "level": 1,
     "current_symbol": None,
     "entry_price": None,
     "position_size": 0,
     "last_action": "WAITING",
-    "trades": []
+    "trades": [],
+    "equity_curve": [START_BALANCE]
 }
 
 # =============================
@@ -84,6 +86,57 @@ def evaluate_markets():
     return best_signal
 
 # =============================
+# ANALYTICS
+# =============================
+
+def calculate_stats():
+    trades = engine["trades"]
+
+    if not trades:
+        return {
+            "total_trades": 0,
+            "win_rate": 0,
+            "total_profit": 0,
+            "avg_win": 0,
+            "avg_loss": 0,
+            "max_drawdown": 0,
+            "roi": 0
+        }
+
+    profits = [t["profit"] for t in trades]
+    wins = [p for p in profits if p > 0]
+    losses = [p for p in profits if p <= 0]
+
+    total_profit = sum(profits)
+    win_rate = (len(wins) / len(profits)) * 100
+
+    avg_win = np.mean(wins) if wins else 0
+    avg_loss = np.mean(losses) if losses else 0
+
+    # Drawdown
+    equity = engine["equity_curve"]
+    peak = equity[0]
+    max_dd = 0
+    for value in equity:
+        if value > peak:
+            peak = value
+        dd = (peak - value) / peak
+        if dd > max_dd:
+            max_dd = dd
+
+    roi = ((engine["balance"] - START_BALANCE) / START_BALANCE) * 100
+
+    return {
+        "total_trades": len(profits),
+        "win_rate": round(win_rate, 2),
+        "total_profit": round(total_profit, 2),
+        "avg_win": round(avg_win, 2),
+        "avg_loss": round(avg_loss, 2),
+        "max_drawdown": round(max_dd * 100, 2),
+        "roi": round(roi, 2)
+    }
+
+# =============================
 # TRADING LOOP
 # =============================
 
@@ -91,7 +144,6 @@ def trading_loop():
     while True:
         try:
             signal = evaluate_markets()
-
             if signal is None:
                 time.sleep(10)
                 continue
@@ -99,7 +151,6 @@ def trading_loop():
             price = signal["price"]
             rsi = signal["rsi"]
 
-            # ENTRY
             if engine["current_symbol"] is None and rsi < 30:
                 risk_amount = engine["balance"] * RISK_PER_TRADE
                 position_size = risk_amount / price
@@ -109,7 +160,6 @@ def trading_loop():
                 engine["position_size"] = position_size
                 engine["last_action"] = f"BUY {signal['symbol']}"
 
-            # EXIT
             elif engine["current_symbol"] is not None:
                 if rsi > 60:
                     profit = (price - engine["entry_price"]) * engine["position_size"]
@@ -117,9 +167,13 @@ def trading_loop():
 
                     engine["trades"].append({
                         "symbol": engine["current_symbol"],
-                        "profit": round(profit, 2),
-                        "balance": round(engine["balance"], 2)
+                        "profit": profit
                     })
+
+                    engine["equity_curve"].append(engine["balance"])
+
+                    if engine["balance"] > engine["peak_balance"]:
+                        engine["peak_balance"] = engine["balance"]
 
                     engine["current_symbol"] = None
                     engine["entry_price"] = None
@@ -149,7 +203,8 @@ def check_level_up():
 
 @app.route("/")
 def dashboard():
-    return render_template("dashboard.html", engine=engine)
+    stats = calculate_stats()
+    return render_template("dashboard.html", engine=engine, stats=stats)
 
 # =============================
 # START THREAD
