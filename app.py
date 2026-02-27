@@ -1,109 +1,112 @@
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template
 import requests
-import datetime
+from datetime import datetime
 
 app = Flask(__name__)
 
-# Major coins only
-COINS = [
-    "BTCUSD",
-    "ETHUSD",
-    "SOLUSD",
-    "XRPUSD",
-    "ADAUSD",
-    "LINKUSD",
-    "AVAXUSD",
-    "DOTUSD",
-    "LTCUSD",
-    "BCHUSD",
-    "ATOMUSD"
-]
+KRAKEN_URL = "https://api.kraken.com/0/public/Ticker"
 
-KRAKEN_TICKER_URL = "https://api.kraken.com/0/public/Ticker"
-KRAKEN_OHLC_URL = "https://api.kraken.com/0/public/OHLC"
+# Focused long-term coins (clean, stable list)
+COINS = {
+    "BTCUSD": "BTC",
+    "ETHUSD": "ETH",
+    "SOLUSD": "SOL",
+    "ADAUSD": "ADA",
+    "XRPUSD": "XRP",
+    "AVAXUSD": "AVAX",
+    "DOTUSD": "DOT",
+    "LINKUSD": "LINK",
+    "LTCUSD": "LTC",
+    "BCHUSD": "BCH"
+}
 
+previous_scores = {}
 
-def get_price(pair):
+def get_market_data(pair):
     try:
-        r = requests.get(KRAKEN_TICKER_URL, params={"pair": pair}, timeout=10).json()
-        data = list(r["result"].values())[0]
-        return float(data["c"][0])
+        r = requests.get(KRAKEN_URL, params={"pair": pair}, timeout=5)
+        data = r.json()["result"]
+        key = list(data.keys())[0]
+        info = data[key]
+
+        price = float(info["c"][0])
+        volume = float(info["v"][1])
+        change = float(info["p"][1])  # 24h VWAP approx proxy
+
+        return price, volume, change
     except:
-        return None
+        return None, None, None
 
 
-def get_return(pair, interval, periods_back):
-    try:
-        r = requests.get(
-            KRAKEN_OHLC_URL,
-            params={"pair": pair, "interval": interval},
-            timeout=10
-        ).json()
+def calculate_score(price, volume, change):
+    # Long-term weighted score
+    score = 0
 
-        candles = list(r["result"].values())[0]
+    score += change * 0.6
+    score += (volume / 1_000_000) * 0.4
 
-        if len(candles) < periods_back:
-            return 0
-
-        current_close = float(candles[-1][4])
-        past_close = float(candles[-periods_back][4])
-
-        return ((current_close - past_close) / past_close) * 100
-    except:
-        return 0
+    return round(score, 2)
 
 
-def calculate_scores():
-    results = []
+def market_regime():
+    price, volume, change = get_market_data("BTCUSD")
+    if change is None:
+        return "NEUTRAL"
 
-    btc_30 = get_return("BTCUSD", 1440, 30)
-    btc_90 = get_return("BTCUSD", 1440, 90)
+    if change > 0:
+        return "BULL"
+    else:
+        return "BEAR"
 
-    for pair in COINS:
-        price = get_price(pair)
-        if price is None:
-            continue
 
-        r30 = get_return(pair, 1440, 30)
-        r90 = get_return(pair, 1440, 90)
+def generate_signal(symbol, score, regime):
+    prev = previous_scores.get(symbol, 0)
+    delta = score - prev
 
-        relative = ((r30 - btc_30) + (r90 - btc_90)) / 2
+    previous_scores[symbol] = score
 
-        score = (r30 * 0.4) + (r90 * 0.4) + (relative * 0.2)
+    # BUY conditions
+    if regime == "BULL" and delta > 5:
+        return "BUY", "High"
 
-        if score > 25:
-            strength = "STRONG"
-        elif score > 5:
-            strength = "ACCUMULATION"
-        elif score > -5:
-            strength = "NEUTRAL"
-        else:
-            strength = "WEAK"
+    # SELL conditions
+    if delta < -5:
+        return "SELL", "High"
 
-        results.append({
-            "coin": pair.replace("USD", ""),
-            "price": round(price, 2),
-            "score": round(score, 2),
-            "strength": strength
-        })
-
-    results.sort(key=lambda x: x["score"], reverse=True)
-
-    return results
+    return "HOLD", "Medium"
 
 
 @app.route("/")
 def home():
-    return render_template("index.html")
+    results = []
+    regime = market_regime()
 
+    for pair, name in COINS.items():
+        price, volume, change = get_market_data(pair)
+        if price is None:
+            continue
 
-@app.route("/data")
-def data():
-    coins = calculate_scores()
-    return jsonify({
-        "updated": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-        "coins": coins
-    })
+        score = calculate_score(price, volume, change)
+        signal, confidence = generate_signal(name, score, regime)
+
+        results.append({
+            "coin": name,
+            "price": round(price, 2),
+            "score": score,
+            "signal": signal,
+            "confidence": confidence
+        })
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+
+    updated = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    return render_template(
+        "index.html",
+        results=results,
+        updated=updated,
+        regime=regime
+    )
 
 
 if __name__ == "__main__":
