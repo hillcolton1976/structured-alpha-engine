@@ -5,13 +5,13 @@ import random
 app = Flask(__name__)
 
 # ------------------------
-# Score Generator
+# Generate Random Score
 # ------------------------
 def generate_score():
     return round(random.uniform(-100, 100), 2)
 
 # ------------------------
-# Market Regime Detection
+# Determine Market Regime
 # ------------------------
 def determine_regime(coins):
     avg_score = sum(c["score"] for c in coins) / len(coins)
@@ -49,7 +49,8 @@ def generate_signal(score, regime):
 # ------------------------
 # Trade Plan Builder
 # ------------------------
-def build_trade_plan(pricele(price, signal):
+def build_trade_plan(price, signal):
+
     price = float(price)
 
     if signal == "BUY":
@@ -72,9 +73,7 @@ def build_trade_plan(pricele(price, signal):
 
     return stop_loss, take_profit, risk, size
 
-# ------------------------
-# Main Route
-# ------------------------
+
 @app.route("/")
 def home():
 
@@ -93,7 +92,7 @@ def home():
 
     coins = []
 
-    # Generate base scores
+    # First pass: generate scores
     for name, price in coins_raw:
         score = generate_score()
         coins.append({
@@ -102,9 +101,10 @@ def home():
             "score": score
         })
 
+    # Determine regime
     regime = determine_regime(coins)
 
-    # Add signals + trade plans
+    # Second pass: generate signals + trade plans
     for coin in coins:
         signal, confidence = generate_signal(coin["score"], regime)
         stop_loss, take_profit, risk, size = build_trade_plan(coin["price"], signal)
@@ -123,5 +123,6 @@ def home():
         regime=regime
     )
 
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=8080)
