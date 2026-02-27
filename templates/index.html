@@ -72,7 +72,7 @@
         <th>Score</th>
         <th>Signal</th>
         <th>Confidence</th>
-        <th>Entry</th>
+        <th>Stop Loss</th>
         <th>Take Profit</th>
         <th>Risk</th>
         <th>Size</th>
@@ -86,8 +86,20 @@
         <td>{{ coin.score }}</td>
         <td class="{{ coin.signal }}">{{ coin.signal }}</td>
         <td class="{{ coin.confidence }}">{{ coin.confidence }}</td>
-        <td>${{ coin.entry }}</td>
-        <td>${{ coin.take_profit }}</td>
+        <td>
+            {% if coin.stop_loss != "-" %}
+                ${{ coin.stop_loss }}
+            {% else %}
+                -
+            {% endif %}
+        </td>
+        <td>
+            {% if coin.take_profit != "-" %}
+                ${{ coin.take_profit }}
+            {% else %}
+                -
+            {% endif %}
+        </td>
         <td>{{ coin.risk }}</td>
         <td>{{ coin.size }}</td>
     </tr>
