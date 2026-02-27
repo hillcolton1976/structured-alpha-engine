@@ -1,51 +1,63 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Auto Level Engine</title>
-    <meta http-equiv="refresh" content="10">
+    <title>Rotation Auto Engine</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body {
-            background:#0e1117;
-            color:#e6edf3;
-            font-family:Arial;
-            padding:40px;
+            background-color: #0f172a;
+            color: #e2e8f0;
+            font-family: Arial;
+            padding: 20px;
         }
         .card {
-            background:#161b22;
-            padding:20px;
-            margin-bottom:20px;
-            border-radius:8px;
+            background: #1e293b;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 10px;
         }
-        .buy {color:#22c55e;}
-        .sell {color:#ef4444;}
-        .hold {color:#facc15;}
+        .profit {
+            color: #22c55e;
+        }
+        .loss {
+            color: #ef4444;
+        }
     </style>
 </head>
 <body>
 
-<h1>🚀 Mean Reversion Auto Engine</h1>
+<h2>🚀 Dynamic Rotation Engine (Paper Trading)</h2>
 
 <div class="card">
-<h2>Balance: ${{ balance }}</h2>
-<h3>Level: {{ level }}</h3>
+    <h3>Balance: ${{ engine.balance }}</h3>
+    <h3>Level: {{ engine.level }}</h3>
+    <h3>Last Action: {{ engine.last_action }}</h3>
 </div>
 
 <div class="card">
-<h3>BTC Price: ${{ price }}</h3>
-<h3>RSI: {{ rsi }}</h3>
-<h3>Last Action: 
-<span class="{{ action|lower }}">{{ action }}</span>
-</h3>
+    <h3>Active Position</h3>
+    <p>Symbol: {{ engine.current_symbol }}</p>
+    <p>Entry: {{ engine.entry_price }}</p>
 </div>
 
 <div class="card">
-<h3>Recent Trades</h3>
-<ul>
-{% for t in trades %}
-<li>${{ t }}</li>
-{% endfor %}
-</ul>
+    <h3>Recent Trades</h3>
+    {% for trade in engine.trades[-10:] %}
+        <p>
+            {{ trade.symbol }} →
+            <span class="{{ 'profit' if trade.profit > 0 else 'loss' }}">
+                {{ trade.profit }}
+            </span>
+            | Balance: {{ trade.balance }}
+        </p>
+    {% endfor %}
 </div>
+
+<script>
+setTimeout(() => {
+    location.reload();
+}, 15000);
+</script>
 
 </body>
 </html>
