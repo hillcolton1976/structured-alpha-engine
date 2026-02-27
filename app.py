@@ -1,122 +1,130 @@
-from flask import Flask, render_template
-from datetime import datetime
+from flask import Flask, jsonify
 import requests
-import math
+import pandas as pd
+import numpy as np
+from datetime import datetime
 
 app = Flask(__name__)
 
-COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
+SYMBOLS = [
+    "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","ADAUSDT",
+    "AVAXUSDT","DOTUSDT","LINKUSDT","LTCUSDT","BNBUSDT"
+]
 
-# -------------------------
-# SIGNAL LOGIC
-# -------------------------
+TIMEFRAMES = {
+    "scalp": "5m",
+    "swing": "4h",
+    "position": "1d"
+}
 
-def generate_signal(score):
-    if score > 60:
-        return "BUY", "High"
-    elif score > 25:
-        return "BUY", "Medium"
-    elif score > -25:
-        return "HOLD", "Low"
-    elif score > -60:
-        return "SELL", "Medium"
+def get_klines(symbol, interval, limit=200):
+    url = f"https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    r = requests.get(url, params=params)
+    data = r.json()
+    df = pd.DataFrame(data, columns=[
+        "open_time","open","high","low","close","volume",
+        "close_time","qav","num_trades","taker_base",
+        "taker_quote","ignore"
+    ])
+    df["close"] = df["close"].astype(float)
+    df["high"] = df["high"].astype(float)
+    df["low"] = df["low"].astype(float)
+    df["volume"] = df["volume"].astype(float)
+    return df
+
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def calculate_atr(df, period=14):
+    high_low = df["high"] - df["low"]
+    high_close = np.abs(df["high"] - df["close"].shift())
+    low_close = np.abs(df["low"] - df["close"].shift())
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = ranges.max(axis=1)
+    return true_range.rolling(period).mean()
+
+def score_timeframe(df):
+    score = 0
+
+    df["ema20"] = df["close"].ewm(span=20).mean()
+    df["ema50"] = df["close"].ewm(span=50).mean()
+    df["rsi"] = calculate_rsi(df["close"])
+    df["atr"] = calculate_atr(df)
+
+    latest = df.iloc[-1]
+
+    # Trend
+    if latest["ema20"] > latest["ema50"]:
+        score += 25
     else:
-        return "SELL", "High"
+        score -= 25
 
-def build_trade_plan(price, signal):
-    price = float(price)
+    # Momentum
+    if latest["rsi"] > 60:
+        score += 25
+    elif latest["rsi"] < 40:
+        score -= 25
 
-    if signal == "BUY":
-        stop = round(price * 0.97, 2)
-        take_profit = round(price * 1.08, 2)
-        risk = "2%"
-        size = "Full"
-    elif signal == "SELL":
-        stop = round(price * 1.03, 2)
-        take_profit = round(price * 0.92, 2)
-        risk = "2%"
-        size = "Reduced"
+    # Breakout
+    if latest["close"] > df["close"].rolling(20).max().iloc[-2]:
+        score += 25
+    if latest["close"] < df["close"].rolling(20).min().iloc[-2]:
+        score -= 25
+
+    # Volume spike
+    if latest["volume"] > df["volume"].rolling(20).mean().iloc[-2]:
+        score += 25
+
+    return score, latest["close"], latest["atr"]
+
+def classify(score):
+    if score > 70:
+        return "STRONG BUY"
+    elif score > 40:
+        return "BUY"
+    elif score < -70:
+        return "STRONG SELL"
+    elif score < -40:
+        return "SELL"
     else:
-        stop = "-"
-        take_profit = "-"
-        risk = "-"
-        size = "-"
-
-    return stop, take_profit, risk, size
-
-# -------------------------
-# SIMPLE MOMENTUM SCORE
-# -------------------------
-
-def calculate_score(coin):
-    change_24h = coin.get("price_change_percentage_24h", 0) or 0
-    change_7d = coin.get("price_change_percentage_7d_in_currency", 0) or 0
-    volume = coin.get("total_volume", 0) or 0
-
-    volume_score = math.log(volume + 1) if volume > 0 else 0
-
-    score = (change_24h * 1.5) + (change_7d * 2) + volume_score
-    return round(score, 2)
-
-# -------------------------
-# MAIN ROUTE
-# -------------------------
+        return "HOLD"
 
 @app.route("/")
 def home():
+    results = []
 
-    params = {
-        "vs_currency": "usd",
-        "order": "market_cap_desc",
-        "per_page": 75,
-        "page": 1,
-        "sparkline": False,
-        "price_change_percentage": "7d"
-    }
+    for symbol in SYMBOLS:
+        tf_scores = {}
+        alignment = 0
 
-    response = requests.get(COINGECKO_URL, params=params)
-    data = response.json()
+        for name, interval in TIMEFRAMES.items():
+            df = get_klines(symbol, interval)
+            score, price, atr = score_timeframe(df)
+            tf_scores[name] = classify(score)
 
-    coins = []
+            if score > 40:
+                alignment += 1
+            if score < -40:
+                alignment -= 1
 
-    for coin in data:
-        score = calculate_score(coin)
-        signal, confidence = generate_signal(score)
-        stop, take_profit, risk, size = build_trade_plan(
-            coin["current_price"], signal
-        )
-
-        coins.append({
-            "coin": coin["symbol"].upper(),
-            "price": round(coin["current_price"], 4),
-            "score": score,
-            "signal": signal,
-            "confidence": confidence,
-            "stop": stop,
-            "take_profit": take_profit,
-            "risk": risk,
-            "size": size
+        results.append({
+            "symbol": symbol,
+            "price": round(price, 4),
+            "scalp": tf_scores["scalp"],
+            "swing": tf_scores["swing"],
+            "position": tf_scores["position"],
+            "alignment": alignment
         })
 
-    # Rank by score
-    coins_sorted = sorted(coins, key=lambda x: x["score"], reverse=True)
-
-    # Only show strongest and weakest
-    top_buys = [c for c in coins_sorted if c["signal"] == "BUY"][:10]
-    top_sells = [c for c in reversed(coins_sorted) if c["signal"] == "SELL"][:5]
-
-    final_coins = top_buys + top_sells
-
-    regime = "BULL" if sum(c["score"] for c in coins) > 0 else "BEAR"
-
-    return render_template(
-        "index.html",
-        coins=final_coins,
-        updated=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
-        regime=regime
-    )
-
-# -------------------------
+    return jsonify({
+        "updated": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "results": results
+    })
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run()
