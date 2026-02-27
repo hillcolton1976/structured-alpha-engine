@@ -1,94 +1,124 @@
 from flask import Flask, render_template
+import requests
+import pandas as pd
+import numpy as np
 from datetime import datetime
-import random
 
 app = Flask(__name__)
 
-# ===== ACCOUNT STAGES =====
-def account_stage(balance):
-    if balance < 200:
-        return "Stage 1: $50 → $200 (Aggressive Growth)"
-    elif balance < 1000:
-        return "Stage 2: $200 → $1,000 (Structured Growth)"
-    else:
-        return "Stage 3: $1,000+ (Capital Preservation)"
+# Kraken spot pairs we will scan
+PAIRS = {
+    "BTC": "XBTUSDT",
+    "ETH": "ETHUSDT",
+    "SOL": "SOLUSDT",
+    "XRP": "XRPUSDT",
+    "ADA": "ADAUSDT",
+    "AVAX": "AVAXUSDT",
+    "DOT": "DOTUSDT",
+    "LINK": "LINKUSDT",
+    "LTC": "LTCUSDT",
+    "BCH": "BCHUSDT"
+}
 
-# ===== SWING SIGNAL ENGINE =====
-def swing_signal(score):
-    if score > 60:
-        return "BUY"
-    elif score < -60:
-        return "SELL"
-    else:
-        return "NO TRADE"
+ACCOUNT_BALANCE = 50
+RISK_PER_TRADE = 0.05  # 5% risk
 
-# ===== TRADE PLAN =====
-def trade_plan(price, signal, balance):
-    risk_percent = 0.05 if balance < 200 else 0.03
 
-    if signal == "BUY":
-        entry = round(price, 2)
-        take_profit = round(price * 1.10, 2)
-        stop_loss = round(price * 0.94, 2)
-        position_size = round(balance * risk_percent, 2)
-    elif signal == "SELL":
-        entry = round(price, 2)
-        take_profit = round(price * 0.90, 2)
-        stop_loss = round(price * 1.06, 2)
-        position_size = round(balance * risk_percent, 2)
-    else:
-        entry = "-"
-        take_profit = "-"
-        stop_loss = "-"
-        position_size = "-"
+def get_ohlc(pair):
+    url = f"https://api.kraken.com/0/public/OHLC?pair={pair}&interval=240"
+    r = requests.get(url)
+    data = r.json()
 
-    return entry, take_profit, stop_loss, position_size
+    result_key = list(data["result"].keys())[0]
+    ohlc = data["result"][result_key]
+
+    df = pd.DataFrame(ohlc, columns=[
+        "time","open","high","low","close",
+        "vwap","volume","count"
+    ])
+
+    df["close"] = df["close"].astype(float)
+    return df
+
+
+def add_indicators(df):
+    df["ema9"] = df["close"].ewm(span=9).mean()
+    df["ema21"] = df["close"].ewm(span=21).mean()
+
+    delta = df["close"].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    df["rsi"] = 100 - (100 / (1 + rs))
+
+    return df
+
+
+def analyze_coin(symbol, pair):
+    try:
+        df = get_ohlc(pair)
+        df = add_indicators(df)
+
+        last = df.iloc[-1]
+
+        price = last["close"]
+        ema9 = last["ema9"]
+        ema21 = last["ema21"]
+        rsi = last["rsi"]
+
+        signal = "NO TRADE"
+        score = 0
+
+        if ema9 > ema21:
+            score += 40
+        if rsi > 50 and rsi < 70:
+            score += 30
+        if df["ema9"].iloc[-2] < df["ema9"].iloc[-1]:
+            score += 30
+
+        if score >= 70:
+            signal = "BUY"
+        elif score <= 30:
+            signal = "SELL"
+
+        stop = price * 0.94
+        take = price * 1.10
+
+        position_size = ACCOUNT_BALANCE * RISK_PER_TRADE
+
+        return {
+            "symbol": symbol,
+            "price": round(price, 2),
+            "score": round(score, 2),
+            "signal": signal,
+            "entry": round(price, 2),
+            "take": round(take, 2),
+            "stop": round(stop, 2),
+            "size": round(position_size, 2)
+        }
+
+    except:
+        return None
+
 
 @app.route("/")
 def home():
+    results = []
 
-    balance = 50  # starting balance
-    stage = account_stage(balance)
+    for symbol, pair in PAIRS.items():
+        data = analyze_coin(symbol, pair)
+        if data:
+            results.append(data)
 
-    coins = [
-        ("BTC", 67000),
-        ("ETH", 2000),
-        ("SOL", 90),
-        ("XRP", 0.55),
-        ("ADA", 0.35),
-        ("AVAX", 28),
-        ("LINK", 15),
-        ("LTC", 70),
-        ("BCH", 450),
-    ]
-
-    scored = []
-
-    for name, price in coins:
-        score = random.uniform(-100, 100)
-        scored.append((name, price, score))
-
-    # Pick strongest swing only
-    best = max(scored, key=lambda x: abs(x[2]))
-    symbol, price, score = best
-
-    signal = swing_signal(score)
-    entry, tp, sl, size = trade_plan(price, signal, balance)
+    best = max(results, key=lambda x: x["score"]) if results else None
 
     return render_template(
-        "index.html",
-        symbol=symbol,
-        price=price,
-        score=round(score, 2),
-        signal=signal,
-        entry=entry,
-        take_profit=tp,
-        stop_loss=sl,
-        size=size,
-        balance=balance,
-        stage=stage,
-        updated=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        "swing.html",
+        updated=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        balance=ACCOUNT_BALANCE,
+        best=best
     )
 
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=8080)
