@@ -1,207 +1,188 @@
-import requests
-import threading
+import os
 import time
-import pandas as pd
+import threading
+from datetime import datetime
 from flask import Flask, render_template
+import ccxt
+import pandas as pd
 
 app = Flask(__name__)
 
+# =========================
+# CONFIG
+# =========================
+START_BALANCE = 50.0
+RISK_PER_TRADE = 0.04      # 4%
+TAKE_PROFIT = 0.012        # 1.2%
+STOP_LOSS = 0.006          # 0.6%
+TIMEFRAME = '1m'
+MAX_OPEN_TRADES = 1
+SYMBOL_LIMIT = 15
+
+# =========================
+# ENGINE STATE
+# =========================
 engine = {
-    "balance": 50.0,
-    "start_balance": 50.0,
-    "positions": [],
-    "max_positions": 3,
-    "risk_per_trade": 0.10,
+    "balance": START_BALANCE,
+    "roi": 0.0,
+    "level": 1,
+    "last_action": "Starting...",
+    "total_trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "total_profit": 0.0,
+    "max_drawdown": 0.0,
     "recent_trades": [],
-    "peak_balance": 50.0,
+    "active_trade": None
 }
 
+exchange = ccxt.kraken()
+
 # =========================
-# SAFE BINANCE HELPERS
+# MARKET SCANNER
 # =========================
+def get_symbols():
+    markets = exchange.load_markets()
+    symbols = [
+        s for s in markets
+        if "/USDT" in s and markets[s]['active']
+    ]
+    return symbols[:SYMBOL_LIMIT]
 
-def safe_request(url):
-    try:
-        r = requests.get(url, timeout=10)
-        data = r.json()
-        if isinstance(data, dict):  # API error
-            return None
-        return data
-    except:
-        return None
-
-def get_top_50_symbols():
-    url = "https://api.binance.com/api/v3/ticker/24hr"
-    data = safe_request(url)
-    if not data:
-        return []
-
-    usdt_pairs = [d for d in data if d["symbol"].endswith("USDT")]
-    sorted_pairs = sorted(usdt_pairs, key=lambda x: float(x["quoteVolume"]), reverse=True)
-    return [d["symbol"] for d in sorted_pairs[:50]]
-
-def get_klines(symbol, interval="5m", limit=100):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    data = safe_request(url)
-    if not data:
-        return None
-
-    df = pd.DataFrame(data)
-    df = df.iloc[:, :6]
-    df.columns = ["time","open","high","low","close","volume"]
-    df["close"] = df["close"].astype(float)
-    df["volume"] = df["volume"].astype(float)
+def get_data(symbol):
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=50)
+    df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
     return df
 
-# =========================
-# INDICATORS
-# =========================
-
-def calculate_rsi(df, period=14):
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-def calculate_ema(df, span=9):
-    return df["close"].ewm(span=span, adjust=False).mean()
-
-# =========================
-# ENTRY
-# =========================
-
-def check_entry(symbol):
-    df = get_klines(symbol)
-    if df is None or len(df) < 50:
-        return None
-
-    df["rsi"] = calculate_rsi(df)
-    df["ema"] = calculate_ema(df)
+def check_entry(df):
+    if len(df) < 3:
+        return False
 
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    if last["close"] > prev["high"] and last["rsi"] > 55:
-        return ("LONG", last["close"])
-
-    if last["close"] < prev["low"] and last["rsi"] < 45:
-        return ("SHORT", last["close"])
-
+    # Simple momentum breakout
+    if last["close"] > prev["high"]:
+        return "LONG"
     return None
 
 # =========================
-# EXIT (2 CONFIRMATION)
+# TRADE LOGIC
 # =========================
+def open_trade(symbol, direction, price):
+    risk_amount = engine["balance"] * RISK_PER_TRADE
+    position_size = risk_amount / (price * STOP_LOSS)
 
-def check_exit(position):
-    df = get_klines(position["symbol"])
-    if df is None:
-        return False, None
+    engine["active_trade"] = {
+        "symbol": symbol,
+        "direction": direction,
+        "entry": price,
+        "size": position_size,
+        "stop": price * (1 - STOP_LOSS),
+        "target": price * (1 + TAKE_PROFIT)
+    }
 
-    df["rsi"] = calculate_rsi(df)
-    df["ema"] = calculate_ema(df)
+    engine["last_action"] = f"Entered {symbol}"
 
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+def close_trade(price, reason):
+    trade = engine["active_trade"]
+    if not trade:
+        return
 
-    confirmations = 0
+    entry = trade["entry"]
+    size = trade["size"]
 
-    if position["side"] == "LONG" and last["rsi"] < prev["rsi"]:
-        confirmations += 1
-    if position["side"] == "SHORT" and last["rsi"] > prev["rsi"]:
-        confirmations += 1
+    pnl = (price - entry) * size
+    engine["balance"] += pnl
+    engine["total_profit"] += pnl
+    engine["total_trades"] += 1
 
-    if position["side"] == "LONG" and last["close"] < last["ema"]:
-        confirmations += 1
-    if position["side"] == "SHORT" and last["close"] > last["ema"]:
-        confirmations += 1
+    if pnl > 0:
+        engine["wins"] += 1
+    else:
+        engine["losses"] += 1
 
-    return confirmations >= 2, last["close"]
+    engine["roi"] = ((engine["balance"] - START_BALANCE) / START_BALANCE) * 100
+
+    engine["recent_trades"].append({
+        "symbol": trade["symbol"],
+        "result": round(pnl, 2),
+        "balance": round(engine["balance"], 2)
+    })
+
+    engine["active_trade"] = None
+    engine["last_action"] = f"Closed: {reason}"
 
 # =========================
-# LOOP
+# MAIN LOOP
 # =========================
-
 def trading_loop():
     while True:
         try:
-            symbols = get_top_50_symbols()
-            if not symbols:
-                time.sleep(10)
-                continue
+            symbols = get_symbols()
 
-            # ENTRY
-            for symbol in symbols:
-                if len(engine["positions"]) >= engine["max_positions"]:
-                    break
+            if engine["active_trade"] is None:
+                for symbol in symbols:
+                    df = get_data(symbol)
+                    signal = check_entry(df)
 
-                if any(p["symbol"] == symbol for p in engine["positions"]):
-                    continue
+                    if signal:
+                        price = df.iloc[-1]["close"]
+                        open_trade(symbol, signal, price)
+                        break
 
-                entry = check_entry(symbol)
-                if entry:
-                    side, price = entry
-                    risk_amount = engine["balance"] * engine["risk_per_trade"]
+            else:
+                trade = engine["active_trade"]
+                df = get_data(trade["symbol"])
+                price = df.iloc[-1]["close"]
+                prev_close = df.iloc[-2]["close"]
 
-                    engine["positions"].append({
-                        "symbol": symbol,
-                        "side": side,
-                        "entry": price,
-                        "size": risk_amount
-                    })
+                # Stop loss
+                if price <= trade["stop"]:
+                    close_trade(price, "Stop Loss")
 
-            # EXIT
-            for position in engine["positions"][:]:
-                should_exit, exit_price = check_exit(position)
-                if should_exit and exit_price:
-                    if position["side"] == "LONG":
-                        pnl = (exit_price - position["entry"]) / position["entry"]
-                    else:
-                        pnl = (position["entry"] - exit_price) / position["entry"]
+                # Take profit
+                elif price >= trade["target"]:
+                    close_trade(price, "Take Profit")
 
-                    profit = position["size"] * pnl
-                    engine["balance"] += profit
+                # Early exit momentum flip
+                elif price < prev_close:
+                    close_trade(price, "Momentum Flip")
 
-                    engine["recent_trades"].append({
-                        "symbol": position["symbol"],
-                        "side": position["side"],
-                        "pnl": round(profit, 2)
-                    })
-
-                    engine["positions"].remove(position)
-
-                    if engine["balance"] > engine["peak_balance"]:
-                        engine["peak_balance"] = engine["balance"]
-
-            time.sleep(30)
+            time.sleep(20)
 
         except Exception as e:
-            print("Loop error:", e)
+            print("Error:", e)
+            engine["last_action"] = "Error"
             time.sleep(10)
 
 # =========================
 # DASHBOARD
 # =========================
-
 @app.route("/")
 def dashboard():
-    roi = ((engine["balance"] - engine["start_balance"]) / engine["start_balance"]) * 100
-    drawdown = ((engine["peak_balance"] - engine["balance"]) / engine["peak_balance"]) * 100
+    win_rate = 0
+    if engine["total_trades"] > 0:
+        win_rate = (engine["wins"] / engine["total_trades"]) * 100
 
     return render_template(
         "dashboard.html",
         balance=round(engine["balance"], 2),
-        roi=round(roi, 2),
-        drawdown=round(drawdown, 2),
-        trades=engine["recent_trades"][-15:],   # FIXED
-        trade_count=len(engine["recent_trades"]),
-        open_positions=engine["positions"]
+        roi=round(engine["roi"], 2),
+        level=engine["level"],
+        last_action=engine["last_action"],
+        total_trades=engine["total_trades"],
+        win_rate=round(win_rate, 2),
+        total_profit=round(engine["total_profit"], 2),
+        max_drawdown=round(engine["max_drawdown"], 2),
+        trades=engine["recent_trades"][-15:]
     )
 
-threading.Thread(target=trading_loop, daemon=True).start()
-
+# =========================
+# START ENGINE
+# =========================
 if __name__ == "__main__":
+    thread = threading.Thread(target=trading_loop)
+    thread.daemon = True
+    thread.start()
     app.run(host="0.0.0.0", port=8080)
