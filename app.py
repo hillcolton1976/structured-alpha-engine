@@ -1,203 +1,197 @@
-from flask import Flask, render_template
 import requests
-import time
 import threading
+import time
+import pandas as pd
+from flask import Flask, render_template
 
 app = Flask(__name__)
 
+# =========================
+# ENGINE STATE
+# =========================
+
 engine = {
     "balance": 50.0,
+    "start_balance": 50.0,
+    "positions": [],
+    "max_positions": 3,
+    "risk_per_trade": 0.10,  # 10% risk
+    "recent_trades": [],
     "peak_balance": 50.0,
-    "level": 1,
-    "roi": 0,
-    "wins": 0,
-    "losses": 0,
-    "total_trades": 0,
-    "current_symbol": None,
-    "entry_price": 0,
-    "position_size": 0,
-    "last_action": "WAITING",
-    "recent_trades": []
 }
 
-START_BALANCE = 50.0
+# =========================
+# BINANCE HELPERS
+# =========================
 
-# ==============================
-# GET TOP 50 USDT PAIRS
-# ==============================
-
-def get_top_50():
+def get_top_50_symbols():
     url = "https://api.binance.com/api/v3/ticker/24hr"
     data = requests.get(url).json()
-
     usdt_pairs = [d for d in data if d["symbol"].endswith("USDT")]
     sorted_pairs = sorted(usdt_pairs, key=lambda x: float(x["quoteVolume"]), reverse=True)
+    return [d["symbol"] for d in sorted_pairs[:50]]
 
-    top_50 = [coin["symbol"] for coin in sorted_pairs[:50]]
-    return top_50
-
-# ==============================
-# MARKET DATA
-# ==============================
-
-def get_price(symbol):
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-    return float(requests.get(url).json()["price"])
-
-def get_klines(symbol):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=30"
+def get_klines(symbol, interval="5m", limit=100):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     data = requests.get(url).json()
-    closes = [float(candle[4]) for candle in data]
-    return closes
+    df = pd.DataFrame(data)
+    df = df.iloc[:, :6]
+    df.columns = ["time","open","high","low","close","volume"]
+    df["close"] = df["close"].astype(float)
+    df["volume"] = df["volume"].astype(float)
+    return df
 
-def calculate_rsi(closes, period=14):
-    gains = []
-    losses = []
-    for i in range(1, len(closes)):
-        diff = closes[i] - closes[i-1]
-        if diff >= 0:
-            gains.append(diff)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(diff))
+# =========================
+# INDICATORS
+# =========================
 
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
-    if avg_loss == 0:
-        return 100
-
+def calculate_rsi(df, period=14):
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
     rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-# ==============================
-# SCORING SYSTEM
-# ==============================
+def calculate_ema(df, span=9):
+    return df["close"].ewm(span=span, adjust=False).mean()
 
-def score_coin(symbol):
-    closes = get_klines(symbol)
-    rsi = calculate_rsi(closes)
-    momentum = (closes[-1] - closes[-5]) / closes[-5]
-    volatility = abs(closes[-1] - closes[-10]) / closes[-10]
+# =========================
+# ENTRY LOGIC
+# =========================
 
-    score = (50 - abs(rsi - 50)) + (momentum * 200)
-    return score, rsi, volatility
+def check_entry(symbol):
+    df = get_klines(symbol)
+    if len(df) < 50:
+        return None
 
-# ==============================
-# LEVEL SYSTEM
-# ==============================
+    df["rsi"] = calculate_rsi(df)
+    df["ema"] = calculate_ema(df)
 
-def update_level():
-    if engine["balance"] >= 200:
-        engine["level"] = 2
-    if engine["balance"] >= 1000:
-        engine["level"] = 3
-    if engine["balance"] >= 5000:
-        engine["level"] = 4
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
 
-# ==============================
+    # Breakout Long
+    if last["close"] > prev["high"] and last["rsi"] > 55:
+        return ("LONG", last["close"])
+
+    # Breakdown Short
+    if last["close"] < prev["low"] and last["rsi"] < 45:
+        return ("SHORT", last["close"])
+
+    return None
+
+# =========================
+# EXIT LOGIC (2 CONFIRMATION)
+# =========================
+
+def check_exit(position):
+    df = get_klines(position["symbol"])
+    df["rsi"] = calculate_rsi(df)
+    df["ema"] = calculate_ema(df)
+
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    confirmations = 0
+
+    # Momentum reversal
+    if position["side"] == "LONG" and last["rsi"] < prev["rsi"]:
+        confirmations += 1
+    if position["side"] == "SHORT" and last["rsi"] > prev["rsi"]:
+        confirmations += 1
+
+    # Structure break
+    if position["side"] == "LONG" and last["close"] < last["ema"]:
+        confirmations += 1
+    if position["side"] == "SHORT" and last["close"] > last["ema"]:
+        confirmations += 1
+
+    return confirmations >= 2, last["close"]
+
+# =========================
 # TRADING LOOP
-# ==============================
+# =========================
 
 def trading_loop():
     while True:
         try:
-            symbols = get_top_50()
+            symbols = get_top_50_symbols()
 
-            best_symbol = None
-            best_score = -999
-            best_rsi = 50
-            best_vol = 0
-
+            # ENTRY
             for symbol in symbols:
-                try:
-                    score, rsi, vol = score_coin(symbol)
-                    if score > best_score:
-                        best_score = score
-                        best_symbol = symbol
-                        best_rsi = rsi
-                        best_vol = vol
-                except:
+                if len(engine["positions"]) >= engine["max_positions"]:
+                    break
+
+                if any(p["symbol"] == symbol for p in engine["positions"]):
                     continue
 
-            drawdown = (engine["peak_balance"] - engine["balance"]) / engine["peak_balance"]
-            base_risk = 0.10
+                entry = check_entry(symbol)
+                if entry:
+                    side, price = entry
+                    risk_amount = engine["balance"] * engine["risk_per_trade"]
+                    position_size = risk_amount
 
-            if drawdown > 0.10:
-                base_risk = 0.05
-            if drawdown > 0.20:
-                base_risk = 0.02
-
-            volatility_adjustment = max(0.5, 1 - best_vol)
-            risk_percent = base_risk * volatility_adjustment
-
-            if engine["current_symbol"] is None and best_rsi < 40:
-                engine["current_symbol"] = best_symbol
-                engine["entry_price"] = get_price(best_symbol)
-                engine["position_size"] = engine["balance"] * risk_percent
-                engine["last_action"] = f"BUY {best_symbol}"
-
-            elif engine["current_symbol"] is not None:
-                current_price = get_price(engine["current_symbol"])
-                change = (current_price - engine["entry_price"]) / engine["entry_price"]
-
-                if best_rsi > 60 or change > 0.01 or change < -0.02:
-                    profit = engine["position_size"] * change
-                    engine["balance"] += profit
-                    engine["total_trades"] += 1
-
-                    if profit > 0:
-                        engine["wins"] += 1
-                        result = "WIN"
-                    else:
-                        engine["losses"] += 1
-                        result = "LOSS"
-
-                    engine["recent_trades"].insert(0, {
-                        "symbol": engine["current_symbol"],
-                        "result": result,
-                        "balance": round(engine["balance"], 2)
+                    engine["positions"].append({
+                        "symbol": symbol,
+                        "side": side,
+                        "entry": price,
+                        "size": position_size
                     })
 
-                    engine["current_symbol"] = None
-                    engine["last_action"] = f"SELL {result}"
+            # EXIT
+            for position in engine["positions"][:]:
+                should_exit, exit_price = check_exit(position)
+                if should_exit:
+                    if position["side"] == "LONG":
+                        pnl = (exit_price - position["entry"]) / position["entry"]
+                    else:
+                        pnl = (position["entry"] - exit_price) / position["entry"]
 
-            if engine["balance"] > engine["peak_balance"]:
-                engine["peak_balance"] = engine["balance"]
+                    profit = position["size"] * pnl
+                    engine["balance"] += profit
+                    engine["recent_trades"].append({
+                        "symbol": position["symbol"],
+                        "side": position["side"],
+                        "pnl": round(profit, 2)
+                    })
+                    engine["positions"].remove(position)
 
-            engine["roi"] = round(((engine["balance"] - START_BALANCE) / START_BALANCE) * 100, 2)
+                    if engine["balance"] > engine["peak_balance"]:
+                        engine["peak_balance"] = engine["balance"]
 
-            update_level()
+            time.sleep(30)
 
-        except:
-            pass
+        except Exception as e:
+            print("Error:", e)
+            time.sleep(10)
 
-        time.sleep(20)
-
-# ==============================
-# WEB
-# ==============================
+# =========================
+# DASHBOARD
+# =========================
 
 @app.route("/")
 def dashboard():
-    win_rate = 0
-    if engine["total_trades"] > 0:
-        win_rate = round((engine["wins"] / engine["total_trades"]) * 100, 2)
+    roi = ((engine["balance"] - engine["start_balance"]) / engine["start_balance"]) * 100
+    drawdown = ((engine["peak_balance"] - engine["balance"]) / engine["peak_balance"]) * 100
 
-    max_dd = round((engine["peak_balance"] - engine["balance"]) / engine["peak_balance"] * 100, 2)
-
-    return render_template("dashboard.html",
-        balance=round(engine["balance"],2),
-        roi=engine["roi"],
-        level=engine["level"],
-        last_action=engine["last_action"],
-        total_trades=engine["total_trades"],
-        win_rate=win_rate,
-        total_profit=round(engine["balance"] - START_BALANCE,2),
-        max_drawdown=max_dd,
-        trades=engine["recent_trades"][:15]
+    return render_template(
+        "dashboard.html",
+        balance=round(engine["balance"], 2),
+        roi=round(roi, 2),
+        drawdown=round(drawdown, 2),
+        trades=len(engine["recent_trades"]),
+        open_positions=engine["positions"],
+        recent_trades=engine["recent_trades"][-15:]
     )
 
+# =========================
+# START THREAD
+# =========================
+
+threading.Thread(target=trading_loop, daemon=True).start()
+
 if __name__ == "__main__":
-    threading.Thread(target=trading_loop).start()
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=8080)
