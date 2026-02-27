@@ -16,28 +16,29 @@
             margin-bottom: 20px;
             border-radius: 10px;
         }
-        .profit {
-            color: #22c55e;
-        }
-        .loss {
-            color: #ef4444;
-        }
+        .profit { color: #22c55e; }
+        .loss { color: #ef4444; }
     </style>
 </head>
 <body>
 
-<h2>🚀 Dynamic Rotation Engine (Paper Trading)</h2>
+<h2>🚀 Dynamic Rotation Engine</h2>
 
 <div class="card">
     <h3>Balance: ${{ engine.balance }}</h3>
+    <h3>ROI: {{ stats.roi }}%</h3>
     <h3>Level: {{ engine.level }}</h3>
     <h3>Last Action: {{ engine.last_action }}</h3>
 </div>
 
 <div class="card">
-    <h3>Active Position</h3>
-    <p>Symbol: {{ engine.current_symbol }}</p>
-    <p>Entry: {{ engine.entry_price }}</p>
+    <h3>Performance</h3>
+    <p>Total Trades: {{ stats.total_trades }}</p>
+    <p>Win Rate: {{ stats.win_rate }}%</p>
+    <p>Total Profit: {{ stats.total_profit }}</p>
+    <p>Average Win: {{ stats.avg_win }}</p>
+    <p>Average Loss: {{ stats.avg_loss }}</p>
+    <p>Max Drawdown: {{ stats.max_drawdown }}%</p>
 </div>
 
 <div class="card">
@@ -46,17 +47,14 @@
         <p>
             {{ trade.symbol }} →
             <span class="{{ 'profit' if trade.profit > 0 else 'loss' }}">
-                {{ trade.profit }}
+                {{ trade.profit | round(2) }}
             </span>
-            | Balance: {{ trade.balance }}
         </p>
     {% endfor %}
 </div>
 
 <script>
-setTimeout(() => {
-    location.reload();
-}, 15000);
+setTimeout(() => { location.reload(); }, 15000);
 </script>
 
 </body>
