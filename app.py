@@ -1,12 +1,14 @@
 import ccxt
 import pandas as pd
 import numpy as np
-import time
 from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
-exchange = ccxt.binance()
+# ---- EXCHANGE ----
+exchange = ccxt.kucoin({
+    'enableRateLimit': True
+})
 
 START_BALANCE = 50
 RISK_PER_TRADE = 0.07
@@ -20,21 +22,28 @@ engine = {
     "last_action": "Starting..."
 }
 
+# ---- GET TOP 50 USDT PAIRS ----
 def get_top_50():
     markets = exchange.load_markets()
     usdt_pairs = [s for s in markets if "/USDT" in s and markets[s]['active']]
+
     tickers = exchange.fetch_tickers(usdt_pairs)
+
     sorted_pairs = sorted(
         tickers.items(),
         key=lambda x: x[1]['quoteVolume'] if x[1]['quoteVolume'] else 0,
         reverse=True
     )
+
     return [pair[0] for pair in sorted_pairs[:50]]
 
+# ---- FETCH 1M DATA ----
 def fetch_data(symbol):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=50)
     df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','volume'])
+
     df['ema9'] = df['close'].ewm(span=9).mean()
+
     delta = df['close'].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -42,11 +51,15 @@ def fetch_data(symbol):
     avg_loss = loss.rolling(14).mean()
     rs = avg_gain / avg_loss
     df['rsi'] = 100 - (100 / (1 + rs))
+
     return df
 
+# ---- CORE ENGINE ----
 def evaluate():
+
     balance = engine["balance"]
 
+    # Dynamic scaling
     if balance < 200:
         min_pos = 2
         max_pos = 7
@@ -56,7 +69,7 @@ def evaluate():
 
     symbols = get_top_50()
 
-    # Exit logic
+    # ---- EXIT LOGIC ----
     for symbol in list(engine["positions"].keys()):
         df = fetch_data(symbol)
         latest = df.iloc[-1]
@@ -68,7 +81,6 @@ def evaluate():
         current_price = latest["close"]
         pnl = (current_price - entry) / entry
 
-        # Ultra fast exits
         if (
             latest["close"] < latest["ema9"] or
             latest["rsi"] < 55 or
@@ -86,9 +98,10 @@ def evaluate():
 
             del engine["positions"][symbol]
 
-    # Entry logic
+    # ---- ENTRY LOGIC ----
     if len(engine["positions"]) < max_pos:
         for symbol in symbols:
+
             if symbol in engine["positions"]:
                 continue
 
@@ -114,6 +127,7 @@ def evaluate():
                 if len(engine["positions"]) >= max_pos:
                     break
 
+# ---- UNREALIZED PNL ----
 def calculate_unrealized():
     total = 0
     open_positions = []
@@ -121,6 +135,7 @@ def calculate_unrealized():
     for symbol, pos in engine["positions"].items():
         df = fetch_data(symbol)
         current = df.iloc[-1]["close"]
+
         pnl = (current - pos["entry"]) / pos["entry"]
         value = pos["size"] * (1 + pnl)
         total += value
@@ -135,8 +150,10 @@ def calculate_unrealized():
 
     return total, open_positions
 
+# ---- DASHBOARD ----
 @app.route("/")
 def dashboard():
+
     evaluate()
     unrealized_total, open_positions = calculate_unrealized()
 
@@ -159,6 +176,7 @@ def dashboard():
         </style>
     </head>
     <body>
+
         <h1>🚀 Multi-Coin Momentum Engine</h1>
 
         <div class="card">
