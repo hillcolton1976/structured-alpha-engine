@@ -3,92 +3,159 @@
 <head>
     <title>Alpha Engine Pro</title>
     <meta http-equiv="refresh" content="60">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
     <style>
         body {
-            font-family: Arial;
-            background: #0e1117;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #0f172a, #0b1220);
             color: #e6edf3;
-            padding: 40px;
+            padding: 30px;
+            margin: 0;
         }
-        h1 { margin-bottom: 5px; }
-        .section { margin-top: 40px; }
+
+        h1 {
+            margin-bottom: 5px;
+        }
+
+        .regime {
+            margin-top: 5px;
+            font-size: 18px;
+        }
+
+        .BULL { color: #22c55e; }
+        .BEAR { color: #ef4444; }
+        .NEUTRAL { color: #facc15; }
+
+        .section {
+            margin-top: 40px;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
             margin-top: 15px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+            overflow: hidden;
         }
-        th {
-            background: #161b22;
-            padding: 10px;
-            text-align: left;
-        }
-        td {
-            padding: 10px;
-            border-bottom: 1px solid #30363d;
-        }
-        tr:hover { background: #1f2937; }
 
+        th {
+            background: #111827;
+            padding: 12px;
+            text-align: left;
+            font-size: 14px;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #1f2937;
+            font-size: 14px;
+        }
+
+        tr:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        /* Signals */
+        .STRONG-BUY { color: #00ffa3; font-weight: bold; }
         .BUY { color: #22c55e; font-weight: bold; }
-        .SELL { color: #ef4444; font-weight: bold; }
         .HOLD { color: #facc15; font-weight: bold; }
+        .SELL { color: #ef4444; font-weight: bold; }
+        .STRONG-SELL { color: #ff2e63; font-weight: bold; }
+
+        /* Risk */
+        .HIGH { color: #ff4d4d; }
+        .MEDIUM { color: #facc15; }
+        .LOW { color: #22c55e; }
+
+        .score {
+            font-weight: bold;
+        }
 
         .footer {
-            margin-top: 30px;
+            margin-top: 40px;
             opacity: 0.6;
+            font-size: 13px;
+        }
+
+        @media (max-width: 768px) {
+            body { padding: 15px; }
+            th, td { font-size: 12px; padding: 8px; }
         }
     </style>
 </head>
+
 <body>
 
 <h1>📊 Alpha Engine Pro</h1>
 <div>Updated: {{ updated }}</div>
+<div class="regime">
+    Market Regime:
+    <span class="{{ regime }}">{{ regime }}</span>
+</div>
 
+<!-- 🔥 TOP OPPORTUNITIES -->
 <div class="section">
 <h2>🔥 Top 10 Opportunities</h2>
+
 <table>
 <tr>
-<th>Coin</th>
-<th>Price</th>
-<th>Signal</th>
-<th>Alignment</th>
-<th>RSI</th>
+    <th>Coin</th>
+    <th>Price</th>
+    <th>Score</th>
+    <th>Signal</th>
+    <th>24h %</th>
+    <th>Vol/MC %</th>
+    <th>Risk</th>
 </tr>
+
 {% for coin in top %}
 <tr>
-<td>{{ coin.symbol }}</td>
-<td>${{ coin.price }}</td>
-<td class="{{ coin.signal }}">{{ coin.signal }}</td>
-<td>{{ coin.alignment }}</td>
-<td>{{ coin.rsi }}</td>
+    <td>{{ coin.symbol }}</td>
+    <td>${{ coin.price }}</td>
+    <td class="score">{{ coin.score }}</td>
+    <td class="{{ coin.signal|replace(' ', '-') }}">{{ coin.signal }}</td>
+    <td>{{ coin.change_24h }}%</td>
+    <td>{{ coin.volume_ratio }}%</td>
+    <td class="{{ coin.risk }}">{{ coin.risk }}</td>
 </tr>
 {% endfor %}
 </table>
 </div>
 
+
+<!-- 📈 FULL MARKET SCAN -->
 <div class="section">
 <h2>📈 Full Market Scan (Top 75)</h2>
+
 <table>
 <tr>
-<th>Coin</th>
-<th>Price</th>
-<th>Signal</th>
-<th>Alignment</th>
-<th>RSI</th>
+    <th>Coin</th>
+    <th>Price</th>
+    <th>Score</th>
+    <th>Signal</th>
+    <th>24h %</th>
+    <th>Vol/MC %</th>
+    <th>Risk</th>
 </tr>
+
 {% for coin in results %}
 <tr>
-<td>{{ coin.symbol }}</td>
-<td>${{ coin.price }}</td>
-<td class="{{ coin.signal }}">{{ coin.signal }}</td>
-<td>{{ coin.alignment }}</td>
-<td>{{ coin.rsi }}</td>
+    <td>{{ coin.symbol }}</td>
+    <td>${{ coin.price }}</td>
+    <td class="score">{{ coin.score }}</td>
+    <td class="{{ coin.signal|replace(' ', '-') }}">{{ coin.signal }}</td>
+    <td>{{ coin.change_24h }}%</td>
+    <td>{{ coin.volume_ratio }}%</td>
+    <td class="{{ coin.risk }}">{{ coin.risk }}</td>
 </tr>
 {% endfor %}
 </table>
 </div>
 
 <div class="footer">
-Auto-refreshes every 60 seconds • EMA 9/21 + RSI Momentum Engine
+Auto-refreshes every 60 seconds • Strength Scoring Engine • Volume Confirmation • Momentum Detection
 </div>
 
 </body>
