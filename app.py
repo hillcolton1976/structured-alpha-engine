@@ -1,41 +1,57 @@
 from flask import Flask, render_template
-import random
 from datetime import datetime
 
 app = Flask(__name__)
 
-# --- Fake market data (replace later with Kraken API if wanted) ---
-coins = ["BTC", "ETH", "SOL", "XRP", "ADA", "AVAX", "DOT", "LINK", "LTC", "BCH"]
-
-def generate_swing_setup():
-    coin = random.choice(coins)
-    price = round(random.uniform(20, 300), 2)
-
-    entry = price
-    take_profit = round(price * 1.10, 2)     # 10% target
-    stop_loss = round(price * 0.94, 2)       # 6% risk
-    position_size = 5                       # Risk controlled for $50 account
-
-    return {
-        "coin": coin,
-        "price": price,
-        "entry": entry,
-        "tp": take_profit,
-        "sl": stop_loss,
-        "size": position_size,
-        "score": round(random.uniform(70, 95), 2),
-        "signal": "BUY"
-    }
-
 @app.route("/")
 def swing():
-    setup = generate_swing_setup()
+
+    # ===== ACCOUNT SETTINGS =====
+    balance = 50  # Starting account
+    updated = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    # ===== MOCK MARKET DATA (Safe For Now) =====
+    coin = "DOT"
+    price = 284.15
+    score = 87.96
+    signal = "BUY"
+
+    # ===== RISK MODEL =====
+    risk_percent = 0.05      # Risk 5% per trade
+    reward_ratio = 2         # 2R target
+    stop_distance_percent = 0.03  # 3% stop
+
+    risk_amount = balance * risk_percent
+
+    stop_loss = round(price - (price * stop_distance_percent), 2)
+    risk_per_unit = price - stop_loss
+    take_profit = round(price + (risk_per_unit * reward_ratio), 2)
+
+    # Avoid division error
+    if risk_per_unit == 0:
+        position_size = 0
+    else:
+        position_size = round(risk_amount / risk_per_unit, 2)
+
+    # ===== SETUP OBJECT =====
+    setup = {
+        "coin": coin,
+        "price": price,
+        "score": score,
+        "signal": signal,
+        "entry": price,
+        "take_profit": take_profit,
+        "stop_loss": stop_loss,
+        "position_size": position_size
+    }
+
+    stage = "Stage 1: $50 → $200 (Aggressive Growth)"
 
     return render_template(
         "swing.html",
-        updated=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
-        balance=50,
-        stage="Stage 1: $50 → $200 (Aggressive Growth)",
+        updated=updated,
+        balance=balance,
+        stage=stage,
         setup=setup
     )
 
