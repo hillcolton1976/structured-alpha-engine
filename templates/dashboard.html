@@ -1,78 +1,57 @@
-<!DOCTYPE html>
+return render_template_string("""
 <html>
 <head>
-    <title>Dynamic Rotation Engine</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="refresh" content="60">
     <style>
-        body {
-            background-color: #0f172a;
-            color: #e2e8f0;
-            font-family: Arial, sans-serif;
-            padding: 20px;
+        body { 
+            background:#0b132b; 
+            color:white; 
+            font-family:Arial; 
+            padding:30px;
         }
-        .card {
-            background: #1e293b;
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 20px;
+        .card { 
+            background:#1c2541; 
+            padding:20px; 
+            margin-bottom:20px; 
+            border-radius:10px;
         }
-        h1 {
-            margin-bottom: 20px;
-        }
-        .green { color: #22c55e; }
-        .red { color: #ef4444; }
-        .yellow { color: #facc15; }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        th, td {
-            padding: 8px;
-            text-align: left;
-        }
-        tr {
-            border-bottom: 1px solid #334155;
-        }
+        h1 { margin-bottom:30px; }
+        p { margin:5px 0; }
     </style>
 </head>
 <body>
+    <h1>🚀 Rotation Engine (Top 50)</h1>
 
-<h1>🚀 Dynamic Rotation Engine</h1>
+    <div class="card">
+        <h2>Balance: ${{balance}}</h2>
+        <p>ROI: {{roi}}%</p>
+        <p>Last Action: {{last_action}}</p>
+    </div>
 
-<div class="card">
-    <h3>Balance: ${{ balance }}</h3>
-    <p>ROI: {{ roi }}%</p>
-    <p>Level: {{ level }}</p>
-    <p>Last Action: <span class="yellow">{{ last_action }}</span></p>
-</div>
+    <div class="card">
+        <h3>Performance</h3>
+        <p>Total Trades: {{total_trades}}</p>
+        <p>Wins: {{wins}}</p>
+        <p>Losses: {{losses}}</p>
+        <p>Win Rate: {{win_rate}}%</p>
+    </div>
 
-<div class="card">
-    <h3>Performance</h3>
-    <p>Total Trades: {{ total_trades }}</p>
-    <p>Win Rate: {{ win_rate }}%</p>
-    <p>Total Profit: ${{ total_profit }}</p>
-    <p>Max Drawdown: {{ max_drawdown }}%</p>
-</div>
-
-<div class="card">
-    <h3>Recent Trades</h3>
-    <table>
-        <tr>
-            <th>Symbol</th>
-            <th>Result</th>
-            <th>Balance</th>
-        </tr>
+    <div class="card">
+        <h3>Recent Trades</h3>
         {% for trade in trades %}
-        <tr>
-            <td>{{ trade.symbol }}</td>
-            <td class="{{ 'green' if trade.result == 'WIN' else 'red' }}">
-                {{ trade.result }}
-            </td>
-            <td>${{ trade.balance }}</td>
-        </tr>
+            <p>{{trade.symbol}} | {{trade.result}} | ${{trade.balance}}</p>
         {% endfor %}
-    </table>
-</div>
+    </div>
 
 </body>
 </html>
+""",
+balance=round(balance,2),
+roi=roi,
+last_action=last_action,
+total_trades=total_trades,
+wins=wins,
+losses=losses,
+win_rate=win_rate,
+trades=recent_trades
+)
