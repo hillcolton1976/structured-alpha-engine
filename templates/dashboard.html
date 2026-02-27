@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Auto Level Engine</title>
+    <meta http-equiv="refresh" content="10">
+    <style>
+        body {
+            background:#0e1117;
+            color:#e6edf3;
+            font-family:Arial;
+            padding:40px;
+        }
+        .card {
+            background:#161b22;
+            padding:20px;
+            margin-bottom:20px;
+            border-radius:8px;
+        }
+        .buy {color:#22c55e;}
+        .sell {color:#ef4444;}
+        .hold {color:#facc15;}
+    </style>
+</head>
+<body>
+
+<h1>🚀 Mean Reversion Auto Engine</h1>
+
+<div class="card">
+<h2>Balance: ${{ balance }}</h2>
+<h3>Level: {{ level }}</h3>
+</div>
+
+<div class="card">
+<h3>BTC Price: ${{ price }}</h3>
+<h3>RSI: {{ rsi }}</h3>
+<h3>Last Action: 
+<span class="{{ action|lower }}">{{ action }}</span>
+</h3>
+</div>
+
+<div class="card">
+<h3>Recent Trades</h3>
+<ul>
+{% for t in trades %}
+<li>${{ t }}</li>
+{% endfor %}
+</ul>
+</div>
+
+</body>
+</html>
