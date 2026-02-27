@@ -1,61 +1,73 @@
-from flask import render_template_string
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Rotation Engine</title>
+    <meta http-equiv="refresh" content="60">
+    <style>
+        body {
+            font-family: Arial;
+            background: #0b132b;
+            color: white;
+            padding: 20px;
+        }
+        .card {
+            background: #1c2541;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 10px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background: #3a506b;
+        }
+    </style>
+</head>
+<body>
 
-@app.route("/")
-def dashboard():
-    evaluate()
+<h1>🚀 Rotation Engine (Top 50)</h1>
 
-    win_rate = round((wins / total_trades) * 100, 2) if total_trades > 0 else 0
-    roi = round(((equity - START_BALANCE) / START_BALANCE) * 100, 2)
+<div class="card">
+    <h3>Balance: ${{ balance }}</h3>
+    <p>ROI: {{ roi }}%</p>
+    <p>Last Action: {{ last_action }}</p>
+</div>
 
-    html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Rotation Engine</title>
-        <style>
-            body { font-family: Arial; background:#0b132b; color:white; padding:20px; }
-            .card { background:#1c2541; padding:20px; margin-bottom:20px; border-radius:10px; }
-        </style>
-    </head>
-    <body>
+<div class="card">
+    <h3>Performance</h3>
+    <p>Total Trades: {{ total_trades }}</p>
+    <p>Wins: {{ wins }}</p>
+    <p>Losses: {{ losses }}</p>
+    <p>Win Rate: {{ win_rate }}%</p>
+</div>
 
-        <h1>🚀 Rotation Engine (Top 50)</h1>
+<div class="card">
+    <h3>Open Positions</h3>
 
-        <div class="card">
-            <h3>Balance: ${{ balance }}</h3>
-            <p>ROI: {{ roi }}%</p>
-            <p>Last Action: {{ last_action }}</p>
-        </div>
+    {% if positions %}
+    <table>
+        <tr>
+            <th>Symbol</th>
+            <th>Entry</th>
+        </tr>
+        {% for symbol, pos in positions.items() %}
+        <tr>
+            <td>{{ symbol }}</td>
+            <td>{{ pos.entry }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% else %}
+        <p>No open positions</p>
+    {% endif %}
 
-        <div class="card">
-            <h3>Performance</h3>
-            <p>Total Trades: {{ total_trades }}</p>
-            <p>Wins: {{ wins }}</p>
-            <p>Losses: {{ losses }}</p>
-            <p>Win Rate: {{ win_rate }}%</p>
-        </div>
+</div>
 
-        <div class="card">
-            <h3>Open Positions</h3>
-            {% for symbol, pos in positions.items() %}
-                <p>{{ symbol }} @ {{ pos.entry }}</p>
-            {% else %}
-                <p>No open positions</p>
-            {% endfor %}
-        </div>
-
-    </body>
-    </html>
-    """
-
-    return render_template_string(
-        html,
-        balance=round(equity, 2),
-        roi=roi,
-        last_action=last_action,
-        total_trades=total_trades,
-        wins=wins,
-        losses=losses,
-        win_rate=win_rate,
-        positions=open_positions
-    )
+</body>
+</html>
