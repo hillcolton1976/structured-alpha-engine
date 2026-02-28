@@ -11,12 +11,14 @@ app = Flask(__name__)
 # CONFIG
 # =============================
 
-TIMEFRAME = "1m"
+TIMEFRAME = "5m"
 START_BALANCE = 50
-RISK_BASE = 0.15
-TP_MULTIPLIER = 1.5
-SL_MULTIPLIER = 1.0
-MAX_POSITIONS = 3
+RISK_BASE = 0.12
+TP_MULTIPLIER = 2.2
+SL_MULTIPLIER = 1.2
+MAX_POSITIONS = 2
+MIN_HOLD_SECONDS = 90
+COOLDOWN_SECONDS = 120
 
 # =============================
 # EXCHANGE (PUBLIC ONLY)
@@ -27,7 +29,7 @@ exchange = ccxt.binanceus({
 })
 
 # =============================
-# GLOBAL STATE
+# STATE
 # =============================
 
 cash = START_BALANCE
@@ -36,93 +38,123 @@ wins = 0
 losses = 0
 trades = 0
 risk_modifier = 1.0
+loss_streak = 0
 
 open_positions = {}
 recent_signals = []
+cooldowns = {}
 
 # =============================
-# UTILS
+# INDICATORS
+# =============================
+
+def calculate_indicators(df):
+    df["ema_fast"] = df["close"].ewm(span=9).mean()
+    df["ema_slow"] = df["close"].ewm(span=21).mean()
+
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    rs = gain.rolling(14).mean() / loss.rolling(14).mean()
+    df["rsi"] = 100 - (100 / (1 + rs))
+
+    df["tr"] = np.maximum(
+        df["high"] - df["low"],
+        np.maximum(
+            abs(df["high"] - df["close"].shift()),
+            abs(df["low"] - df["close"].shift())
+        )
+    )
+    df["atr"] = df["tr"].rolling(14).mean()
+
+    df["vol_ma"] = df["volume"].rolling(20).mean()
+
+    return df
+
+# =============================
+# SYMBOL SELECTION
 # =============================
 
 def get_symbols():
     markets = exchange.load_markets()
-    symbols = [s for s in markets if "/USDT" in s and markets[s]["active"]]
-    return symbols[:30]
-
-def indicators(df):
-    df["ema_fast"] = df["close"].ewm(span=9).mean()
-    df["ema_slow"] = df["close"].ewm(span=21).mean()
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-    rs = avg_gain / avg_loss
-    df["rsi"] = 100 - (100 / (1 + rs))
-    df["vol_ma"] = df["volume"].rolling(20).mean()
-    df["atr"] = (df["high"] - df["low"]).rolling(14).mean()
-    return df
-
-def strength_score(df):
-    last = df.iloc[-1]
-    score = 0
-    if last["ema_fast"] > last["ema_slow"]:
-        score += 1
-    if last["rsi"] > 55:
-        score += 1
-    if last["volume"] > last["vol_ma"]:
-        score += 1
-    return score
+    symbols = [
+        s for s in markets
+        if "/USDT" in s and markets[s]["active"]
+    ]
+    return symbols[:25]
 
 # =============================
-# TRADING LOGIC
+# TRADING ENGINE
 # =============================
 
 def trade():
-    global cash, equity, wins, losses, trades, risk_modifier
+    global cash, equity, wins, losses, trades, risk_modifier, loss_streak
 
     symbols = get_symbols()
     ranked = []
 
     for symbol in symbols:
         try:
-            ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=50)
-            df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
-            df = indicators(df)
-            ranked.append((symbol, df, strength_score(df)))
+            ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=100)
+            df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
+            df.columns = ["time","open","high","low","close","volume"]
+            df = calculate_indicators(df)
+
+            last = df.iloc[-1]
+
+            strength = 0
+            if last["ema_fast"] > last["ema_slow"]:
+                strength += 1
+            if last["rsi"] > 55:
+                strength += 1
+            if last["volume"] > last["vol_ma"]:
+                strength += 1
+
+            ranked.append((symbol, df, strength))
         except:
             continue
 
     ranked.sort(key=lambda x: x[2], reverse=True)
-    top_symbols = ranked[:10]
+    top = ranked[:8]
 
-    # ENTRY
-    for symbol, df, score in top_symbols:
-        if symbol in open_positions or len(open_positions) >= MAX_POSITIONS:
+    # ===== ENTRY =====
+    for symbol, df, score in top:
+
+        if symbol in open_positions:
+            continue
+
+        if len(open_positions) >= MAX_POSITIONS:
+            break
+
+        if score < 3:
+            continue
+
+        if symbol in cooldowns and time.time() < cooldowns[symbol]:
             continue
 
         last = df.iloc[-1]
-        momentum = last["ema_fast"] > last["ema_slow"]
-        rsi_push = last["rsi"] > 52
+        risk_amount = cash * RISK_BASE * risk_modifier
+        qty = risk_amount / last["close"]
 
-        if momentum and rsi_push:
-            risk_amount = cash * RISK_BASE * risk_modifier
-            qty = risk_amount / last["close"]
+        open_positions[symbol] = {
+            "entry": last["close"],
+            "qty": qty,
+            "atr": last["atr"],
+            "time": time.time()
+        }
 
-            open_positions[symbol] = {
-                "entry": last["close"],
-                "qty": qty,
-                "atr": last["atr"]
-            }
+        cash -= risk_amount
+        recent_signals.append(f"BUY {symbol} @ {round(last['close'],4)}")
 
-            cash -= risk_amount
-            recent_signals.append(f"BUY {symbol} @ {round(last['close'],4)}")
-
-    # EXIT
+    # ===== EXIT =====
     for symbol in list(open_positions.keys()):
         pos = open_positions[symbol]
         ticker = exchange.fetch_ticker(symbol)
         price = ticker["last"]
+
+        held_time = time.time() - pos["time"]
+        if held_time < MIN_HOLD_SECONDS:
+            continue
 
         tp = pos["entry"] + (pos["atr"] * TP_MULTIPLIER)
         sl = pos["entry"] - (pos["atr"] * SL_MULTIPLIER)
@@ -134,12 +166,16 @@ def trade():
 
             if pnl > 0:
                 wins += 1
-                risk_modifier *= 1.1
+                risk_modifier *= 1.05
+                loss_streak = 0
             else:
                 losses += 1
                 risk_modifier *= 0.9
+                loss_streak += 1
 
+            cooldowns[symbol] = time.time() + COOLDOWN_SECONDS
             recent_signals.append(f"SELL {symbol} @ {round(price,4)} | PnL: {round(pnl,2)}")
+
             del open_positions[symbol]
 
     equity = cash + sum(
@@ -148,7 +184,7 @@ def trade():
     )
 
 # =============================
-# BACKGROUND LOOP
+# LOOP
 # =============================
 
 def loop():
@@ -157,7 +193,7 @@ def loop():
             trade()
         except:
             pass
-        time.sleep(15)
+        time.sleep(20)
 
 threading.Thread(target=loop, daemon=True).start()
 
@@ -170,7 +206,7 @@ TEMPLATE = """
 <head>
 <style>
 body { background:#0f172a; color:white; font-family:Arial; padding:20px;}
-.card { background:#1e293b; padding:15px; margin-bottom:15px; border-radius:10px;}
+.card { background:#1e293b; padding:20px; margin-bottom:15px; border-radius:12px;}
 .green { color:#22c55e;}
 .red { color:#ef4444;}
 </style>
@@ -178,29 +214,33 @@ body { background:#0f172a; color:white; font-family:Arial; padding:20px;}
 </head>
 <body>
 
-<h2>🔥 Adaptive AI Trader</h2>
+<h2>🔥 Adaptive AI Trader v2</h2>
 
 <div class="card">
-<b>Equity:</b> ${{equity}}<br>
-<b>Cash:</b> ${{cash}}<br>
-<b>Trades:</b> {{trades}}<br>
-<b>Wins:</b> <span class="green">{{wins}}</span><br>
-<b>Losses:</b> <span class="red">{{losses}}</span><br>
-<b>Win Rate:</b> {{winrate}}%
+<h3>Account</h3>
+Equity: <b>${{equity}}</b><br>
+Cash: ${{cash}}<br>
+Trades: {{trades}}<br>
+Wins: <span class="green">{{wins}}</span><br>
+Losses: <span class="red">{{losses}}</span><br>
+Win Rate: {{winrate}}%
 </div>
 
 <div class="card">
 <h3>Open Positions</h3>
+{% if positions %}
 {% for s,p in positions.items() %}
-{{s}} — Entry: {{p["entry"]}}<br>
+<b>{{s}}</b><br>
+Entry: {{p["entry"]}}<br><br>
+{% endfor %}
 {% else %}
 None
-{% endfor %}
+{% endif %}
 </div>
 
 <div class="card">
 <h3>Recent Signals</h3>
-{% for r in signals[-10:] %}
+{% for r in signals[-8:] %}
 {{r}}<br>
 {% endfor %}
 </div>
