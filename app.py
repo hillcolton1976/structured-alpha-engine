@@ -1,193 +1,193 @@
-from flask import Flask, render_template_string
 import requests
 import threading
 import time
-import math
+import statistics
+from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
-# =============================
+# ==============================
 # CONFIG
-# =============================
+# ==============================
 
 START_BALANCE = 50.0
+MAX_COINS = 20
+PRICE_HISTORY_LENGTH = 25
+SLEEP_TIME = 1  # Fast loop
+
 balance = START_BALANCE
+equity = START_BALANCE
 wins = 0
 losses = 0
 trades = 0
-aggression = 0.20  # 20% starting risk
+aggression = 0.25
+
 open_positions = {}
 recent_signals = []
+price_history = {}
 
-COINS = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "SOLUSDT",
-    "BNBUSDT",
-    "XRPUSDT",
-    "ATOMUSDT"
-]
+# ==============================
+# FETCH TOP 20 USDT COINS
+# ==============================
 
-price_history = {coin: [] for coin in COINS}
+def get_top_pairs():
+    url = "https://api.binance.com/api/v3/ticker/24hr"
+    data = requests.get(url, timeout=5).json()
+    usdt_pairs = [x for x in data if x["symbol"].endswith("USDT")]
+    sorted_pairs = sorted(usdt_pairs, key=lambda x: float(x["quoteVolume"]), reverse=True)
+    return [x["symbol"] for x in sorted_pairs[:MAX_COINS]]
 
-# =============================
-# MARKET DATA
-# =============================
+coins = get_top_pairs()
 
-def get_price(symbol):
-    try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        r = requests.get(url, timeout=5)
-        data = r.json()
-        return float(data["price"])
-    except:
-        return None
-
-# =============================
-# INDICATORS
-# =============================
-
-def momentum(prices):
-    if len(prices) < 5:
-        return 0
-    return (prices[-1] - prices[0]) / prices[0]
-
-def volatility(prices):
-    if len(prices) < 5:
-        return 0.01
-    mean = sum(prices) / len(prices)
-    variance = sum((p - mean) ** 2 for p in prices) / len(prices)
-    return math.sqrt(variance) / mean
-
-# =============================
-# EQUITY CALC
-# =============================
-
-def calculate_equity():
-    total = balance
-    for coin, pos in open_positions.items():
-        current_price = get_price(coin)
-        if current_price:
-            unrealized = ((current_price - pos["entry"]) / pos["entry"]) * pos["size"]
-            total += pos["size"] + unrealized
-    return round(total, 2)
-
-# =============================
-# AI TRADER
-# =============================
+# ==============================
+# TRADING LOGIC
+# ==============================
 
 def trader():
-    global balance, wins, losses, trades, aggression
+    global balance, equity, wins, losses, trades, aggression
 
     while True:
-        for coin in COINS:
+        try:
+            prices = {}
+            for coin in coins:
+                url = f"https://api.binance.com/api/v3/ticker/price?symbol={coin}"
+                data = requests.get(url, timeout=3).json()
+                prices[coin] = float(data["price"])
 
-            price = get_price(coin)
-            if not price:
-                continue
+            equity = balance
 
-            # Update history
-            price_history[coin].append(price)
-            if len(price_history[coin]) > 10:
-                price_history[coin].pop(0)
+            for coin, price in prices.items():
+                if coin not in price_history:
+                    price_history[coin] = []
 
-            prices = price_history[coin]
-            mom = momentum(prices)
-            vol = volatility(prices)
+                price_history[coin].append(price)
 
-            # ENTRY (aggressive momentum breakout)
-            if coin not in open_positions and mom > 0.003 and vol > 0.001:
+                if len(price_history[coin]) > PRICE_HISTORY_LENGTH:
+                    price_history[coin].pop(0)
 
-                position_size = balance * aggression
-                if position_size < 5:
+                if len(price_history[coin]) < 10:
                     continue
 
-                open_positions[coin] = {
-                    "entry": price,
-                    "size": position_size,
-                    "tp": price * (1 + vol * 3),
-                    "sl": price * (1 - vol * 2)
-                }
+                history = price_history[coin]
+                momentum = (history[-1] - history[-5]) / history[-5]
+                volatility = statistics.stdev(history[-10:]) / history[-1]
 
-                balance -= position_size
-                trades += 1
-                recent_signals.insert(0, f"🚀 BUY {coin} @ {round(price,2)}")
+                # ===== BUY CONDITION (Adaptive)
+                if coin not in open_positions:
+                    if momentum > 0.002:
 
-            # EXIT
-            if coin in open_positions:
-                pos = open_positions[coin]
+                        position_size = balance * aggression
+                        if position_size < 5:
+                            continue
 
-                if price >= pos["tp"] or price <= pos["sl"]:
+                        qty = position_size / price
+                        balance -= position_size
+                        open_positions[coin] = {
+                            "entry": price,
+                            "qty": qty
+                        }
 
-                    pnl = ((price - pos["entry"]) / pos["entry"]) * pos["size"]
-                    balance += pos["size"] + pnl
+                        recent_signals.insert(0, f"🚀 BUY {coin} @ {round(price,4)}")
+                        recent_signals[:] = recent_signals[:10]
 
-                    if pnl > 0:
-                        wins += 1
-                        aggression = min(0.40, aggression + 0.02)
-                        recent_signals.insert(0, f"✅ SELL {coin} +{round(pnl,2)}")
-                    else:
-                        losses += 1
-                        aggression = max(0.10, aggression - 0.03)
-                        recent_signals.insert(0, f"❌ SELL {coin} {round(pnl,2)}")
+                # ===== SELL CONDITION
+                if coin in open_positions:
+                    entry = open_positions[coin]["entry"]
+                    qty = open_positions[coin]["qty"]
+                    pnl_pct = (price - entry) / entry
 
-                    del open_positions[coin]
+                    take_profit = 0.01 + (volatility * 1.5)
+                    stop_loss = -0.008
 
-        time.sleep(3)
+                    if pnl_pct > take_profit or pnl_pct < stop_loss:
 
-# =============================
-# WEB UI
-# =============================
+                        pnl = qty * (price - entry)
+                        balance += qty * price
+                        equity = balance
+                        trades += 1
+
+                        if pnl > 0:
+                            wins += 1
+                            aggression = min(0.50, aggression + 0.03)
+                        else:
+                            losses += 1
+                            aggression = max(0.10, aggression - 0.05)
+
+                        recent_signals.insert(0, f"SELL {coin} @ {round(price,4)} | PnL: {round(pnl,2)}")
+                        recent_signals[:] = recent_signals[:10]
+
+                        del open_positions[coin]
+
+                # Update equity with unrealized PnL
+                if coin in open_positions:
+                    entry = open_positions[coin]["entry"]
+                    qty = open_positions[coin]["qty"]
+                    equity += qty * (price - entry)
+
+        except:
+            pass
+
+        time.sleep(SLEEP_TIME)
+
+# Start background trader
+threading.Thread(target=trader, daemon=True).start()
+
+# ==============================
+# UI
+# ==============================
 
 @app.route("/")
-def index():
-
-    equity = calculate_equity()
-    win_rate = round((wins / trades) * 100, 1) if trades > 0 else 0
+def dashboard():
+    win_rate = round((wins / trades) * 100, 2) if trades > 0 else 0
 
     return render_template_string("""
     <html>
     <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <meta http-equiv="refresh" content="5">
-        <style>
-            body {
-                background: linear-gradient(135deg,#0f2027,#203a43,#2c5364);
-                color: white;
-                font-family: Arial;
-                padding: 20px;
-            }
-            h1 { color: #ff914d; }
-            .card {
-                background: rgba(255,255,255,0.05);
-                padding: 15px;
-                border-radius: 12px;
-                margin-bottom: 15px;
-            }
-            .green { color: #00ff99; }
-            .red { color: #ff4d4d; }
-        </style>
+    <title>Adaptive AI Trader Pro</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+    body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+        color: white;
+    }
+    .container {
+        padding: 20px;
+    }
+    h1 {
+        color: #ff9f43;
+    }
+    .card {
+        background: rgba(255,255,255,0.08);
+        padding: 15px;
+        margin-bottom: 20px;
+        border-radius: 10px;
+    }
+    .green { color: #4cd137; }
+    .red { color: #e84118; }
+    </style>
     </head>
     <body>
-
-        <h1>🔥 Aggressive AI Trader</h1>
+    <div class="container">
+        <h1>🔥 Adaptive AI Trader PRO</h1>
 
         <div class="card">
-            <h3>Account</h3>
-            <p><strong>Equity:</strong> ${{equity}}</p>
-            <p>Balance: ${{balance}}</p>
-            <p>Trades: {{trades}}</p>
-            <p class="green">Wins: {{wins}}</p>
-            <p class="red">Losses: {{losses}}</p>
-            <p>Win Rate: {{win_rate}}%</p>
-            <p>Aggression: {{aggression_percent}}%</p>
+            <h2>Account</h2>
+            <p><b>Equity:</b> ${{ equity }}</p>
+            <p><b>Balance:</b> ${{ balance }}</p>
+            <p><b>Trades:</b> {{ trades }}</p>
+            <p class="green"><b>Wins:</b> {{ wins }}</p>
+            <p class="red"><b>Losses:</b> {{ losses }}</p>
+            <p><b>Win Rate:</b> {{ win_rate }}%</p>
+            <p><b>Aggression:</b> {{ aggression }}%</p>
         </div>
 
         <div class="card">
-            <h3>Open Positions</h3>
+            <h2>Open Positions</h2>
             {% if open_positions %}
-                {% for coin, pos in open_positions.items() %}
-                    <p>{{coin}} @ {{pos["entry"]}}</p>
+                {% for coin in open_positions %}
+                    <p>{{ coin }}</p>
                 {% endfor %}
             {% else %}
                 <p>None</p>
@@ -195,32 +195,25 @@ def index():
         </div>
 
         <div class="card">
-            <h3>Recent Signals</h3>
-            {% for s in recent_signals[:8] %}
-                <p>{{s}}</p>
+            <h2>Recent Signals</h2>
+            {% for signal in recent_signals %}
+                <p>{{ signal }}</p>
             {% endfor %}
         </div>
 
+    </div>
     </body>
     </html>
     """,
-    equity=equity,
     balance=round(balance,2),
+    equity=round(equity,2),
     trades=trades,
     wins=wins,
     losses=losses,
     win_rate=win_rate,
-    aggression_percent=round(aggression*100,1),
+    aggression=round(aggression*100,1),
     open_positions=open_positions,
-    recent_signals=recent_signals
-    )
-
-# =============================
-# START THREAD
-# =============================
+    recent_signals=recent_signals)
 
 if __name__ == "__main__":
-    t = threading.Thread(target=trader)
-    t.daemon = True
-    t.start()
     app.run(host="0.0.0.0", port=5000)
