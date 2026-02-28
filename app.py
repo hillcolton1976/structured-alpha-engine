@@ -1,219 +1,226 @@
-import ccxt
-import pandas as pd
-import time
-import threading
 from flask import Flask, render_template_string
+import requests
+import threading
+import time
+import math
 
 app = Flask(__name__)
 
-# =========================
+# =============================
 # CONFIG
-# =========================
+# =============================
 
-TIMEFRAME = "3m"
 START_BALANCE = 50.0
+balance = START_BALANCE
+wins = 0
+losses = 0
+trades = 0
+aggression = 0.20  # 20% starting risk
+open_positions = {}
+recent_signals = []
 
-state = {
-    "balance": START_BALANCE,
-    "trades": 0,
-    "wins": 0,
-    "losses": 0,
-    "aggression": 0.15,  # 15% per trade (aggressive)
-    "positions": {},
-    "signals": []
-}
+COINS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "ATOMUSDT"
+]
 
-# =========================
-# TRADER ENGINE
-# =========================
+price_history = {coin: [] for coin in COINS}
 
-class Trader:
-    def __init__(self):
-        self.exchange = ccxt.binanceus()
-        self.symbols = self.get_symbols()
+# =============================
+# MARKET DATA
+# =============================
 
-    def get_symbols(self):
-        markets = self.exchange.load_markets()
-        pairs = [
-            s for s in markets
-            if "/USDT" in s and markets[s]["active"]
-        ]
-        return pairs[:20]  # scan top 20 for speed
+def get_price(symbol):
+    try:
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        r = requests.get(url, timeout=5)
+        data = r.json()
+        return float(data["price"])
+    except:
+        return None
 
-    def fetch_data(self, symbol):
-        ohlcv = self.exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=120)
-        df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
-        return df
+# =============================
+# INDICATORS
+# =============================
 
-    def score(self, df):
-        df["ema9"] = df["c"].ewm(span=9).mean()
-        df["ema21"] = df["c"].ewm(span=21).mean()
+def momentum(prices):
+    if len(prices) < 5:
+        return 0
+    return (prices[-1] - prices[0]) / prices[0]
 
-        delta = df["c"].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-        rs = avg_gain / avg_loss
-        df["rsi"] = 100 - (100 / (1 + rs))
+def volatility(prices):
+    if len(prices) < 5:
+        return 0.01
+    mean = sum(prices) / len(prices)
+    variance = sum((p - mean) ** 2 for p in prices) / len(prices)
+    return math.sqrt(variance) / mean
 
-        score = 0
+# =============================
+# EQUITY CALC
+# =============================
 
-        if df["ema9"].iloc[-1] > df["ema21"].iloc[-1]:
-            score += 1
+def calculate_equity():
+    total = balance
+    for coin, pos in open_positions.items():
+        current_price = get_price(coin)
+        if current_price:
+            unrealized = ((current_price - pos["entry"]) / pos["entry"]) * pos["size"]
+            total += pos["size"] + unrealized
+    return round(total, 2)
 
-        if df["rsi"].iloc[-1] > 55:
-            score += 1
+# =============================
+# AI TRADER
+# =============================
 
-        if df["v"].iloc[-1] > df["v"].rolling(20).mean().iloc[-1]:
-            score += 1
+def trader():
+    global balance, wins, losses, trades, aggression
 
-        return score, df["c"].iloc[-1]
+    while True:
+        for coin in COINS:
 
-    def adjust_aggression(self):
-        total = state["wins"] + state["losses"]
-        if total >= 5:
-            winrate = state["wins"] / total
+            price = get_price(coin)
+            if not price:
+                continue
 
-            if winrate < 0.45:
-                state["aggression"] *= 0.85
-            elif winrate > 0.55:
-                state["aggression"] *= 1.15
+            # Update history
+            price_history[coin].append(price)
+            if len(price_history[coin]) > 10:
+                price_history[coin].pop(0)
 
-            state["aggression"] = max(0.08, min(0.30, state["aggression"]))
+            prices = price_history[coin]
+            mom = momentum(prices)
+            vol = volatility(prices)
 
-    def run(self):
-        print("🔥 Aggressive AI Trader Running...")
-        print("Monitoring:", self.symbols)
+            # ENTRY (aggressive momentum breakout)
+            if coin not in open_positions and mom > 0.003 and vol > 0.001:
 
-        while True:
-            try:
-                for symbol in self.symbols:
-                    df = self.fetch_data(symbol)
-                    score, price = self.score(df)
+                position_size = balance * aggression
+                if position_size < 5:
+                    continue
 
-                    # ENTRY
-                    if score >= 2 and symbol not in state["positions"]:
-                        size = state["balance"] * state["aggression"]
+                open_positions[coin] = {
+                    "entry": price,
+                    "size": position_size,
+                    "tp": price * (1 + vol * 3),
+                    "sl": price * (1 - vol * 2)
+                }
 
-                        if size > 1:
-                            state["positions"][symbol] = {
-                                "entry": price,
-                                "size": size
-                            }
+                balance -= position_size
+                trades += 1
+                recent_signals.insert(0, f"🚀 BUY {coin} @ {round(price,2)}")
 
-                            state["signals"].append(
-                                f"🚀 BUY {symbol} @ {round(price,4)}"
-                            )
+            # EXIT
+            if coin in open_positions:
+                pos = open_positions[coin]
 
-                    # EXIT
-                    if symbol in state["positions"]:
-                        entry = state["positions"][symbol]["entry"]
-                        pnl = (price - entry) / entry
+                if price >= pos["tp"] or price <= pos["sl"]:
 
-                        if pnl > 0.01 or pnl < -0.01:
-                            state["trades"] += 1
+                    pnl = ((price - pos["entry"]) / pos["entry"]) * pos["size"]
+                    balance += pos["size"] + pnl
 
-                            if pnl > 0:
-                                state["wins"] += 1
-                                state["balance"] *= 1.01
-                            else:
-                                state["losses"] += 1
-                                state["balance"] *= 0.99
+                    if pnl > 0:
+                        wins += 1
+                        aggression = min(0.40, aggression + 0.02)
+                        recent_signals.insert(0, f"✅ SELL {coin} +{round(pnl,2)}")
+                    else:
+                        losses += 1
+                        aggression = max(0.10, aggression - 0.03)
+                        recent_signals.insert(0, f"❌ SELL {coin} {round(pnl,2)}")
 
-                            state["signals"].append(
-                                f"💥 SELL {symbol} | {round(pnl*100,2)}%"
-                            )
+                    del open_positions[coin]
 
-                            del state["positions"][symbol]
-                            self.adjust_aggression()
+        time.sleep(3)
 
-                time.sleep(8)
-
-            except Exception as e:
-                print("Error:", e)
-                time.sleep(5)
-
-# =========================
+# =============================
 # WEB UI
-# =========================
+# =============================
 
 @app.route("/")
-def dashboard():
-    total = state["wins"] + state["losses"]
-    winrate = round((state["wins"]/total)*100,2) if total > 0 else 0
+def index():
+
+    equity = calculate_equity()
+    win_rate = round((wins / trades) * 100, 1) if trades > 0 else 0
 
     return render_template_string("""
     <html>
     <head>
-        <title>🔥 Aggressive AI Trader</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta http-equiv="refresh" content="5">
         <style>
             body {
                 background: linear-gradient(135deg,#0f2027,#203a43,#2c5364);
-                font-family: Arial;
                 color: white;
+                font-family: Arial;
                 padding: 20px;
             }
+            h1 { color: #ff914d; }
             .card {
-                background: rgba(255,255,255,0.08);
-                padding: 20px;
+                background: rgba(255,255,255,0.05);
+                padding: 15px;
                 border-radius: 12px;
-                margin-bottom: 20px;
+                margin-bottom: 15px;
             }
-            h1 { color: orange; }
+            .green { color: #00ff99; }
+            .red { color: #ff4d4d; }
         </style>
     </head>
     <body>
+
         <h1>🔥 Aggressive AI Trader</h1>
 
         <div class="card">
-            <h2>Account</h2>
-            Balance: ${{balance}}<br>
-            Trades: {{trades}}<br>
-            Wins: {{wins}}<br>
-            Losses: {{losses}}<br>
-            Win Rate: {{winrate}}%<br>
-            Aggression: {{aggression}}%
+            <h3>Account</h3>
+            <p><strong>Equity:</strong> ${{equity}}</p>
+            <p>Balance: ${{balance}}</p>
+            <p>Trades: {{trades}}</p>
+            <p class="green">Wins: {{wins}}</p>
+            <p class="red">Losses: {{losses}}</p>
+            <p>Win Rate: {{win_rate}}%</p>
+            <p>Aggression: {{aggression_percent}}%</p>
         </div>
 
         <div class="card">
-            <h2>Open Positions</h2>
-            {% for s in positions %}
-                {{s}}<br>
+            <h3>Open Positions</h3>
+            {% if open_positions %}
+                {% for coin, pos in open_positions.items() %}
+                    <p>{{coin}} @ {{pos["entry"]}}</p>
+                {% endfor %}
             {% else %}
-                None
-            {% endfor %}
+                <p>None</p>
+            {% endif %}
         </div>
 
         <div class="card">
-            <h2>Recent Signals</h2>
-            {% for sig in signals[-10:] %}
-                {{sig}}<br>
+            <h3>Recent Signals</h3>
+            {% for s in recent_signals[:8] %}
+                <p>{{s}}</p>
             {% endfor %}
         </div>
 
     </body>
     </html>
     """,
-    balance=round(state["balance"],2),
-    trades=state["trades"],
-    wins=state["wins"],
-    losses=state["losses"],
-    winrate=winrate,
-    aggression=round(state["aggression"]*100,1),
-    positions=state["positions"],
-    signals=state["signals"]
+    equity=equity,
+    balance=round(balance,2),
+    trades=trades,
+    wins=wins,
+    losses=losses,
+    win_rate=win_rate,
+    aggression_percent=round(aggression*100,1),
+    open_positions=open_positions,
+    recent_signals=recent_signals
     )
 
-# =========================
+# =============================
 # START THREAD
-# =========================
-
-def start_trader():
-    trader = Trader()
-    trader.run()
-
-threading.Thread(target=start_trader, daemon=True).start()
+# =============================
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    t = threading.Thread(target=trader)
+    t.daemon = True
+    t.start()
+    app.run(host="0.0.0.0", port=5000)
