@@ -1,194 +1,157 @@
 import ccxt
 import pandas as pd
 import numpy as np
-import threading
 import time
-from flask import Flask, render_template_string
+from datetime import datetime
 
-app = Flask(__name__)
+# ================= CONFIG =================
 
-# ===== CONFIG =====
+API_KEY = "YOUR_API_KEY"
+SECRET = "YOUR_SECRET"
+
+exchange = ccxt.binanceus({
+    'apiKey': API_KEY,
+    'secret': SECRET,
+    'enableRateLimit': True
+})
+
 TIMEFRAME = '1m'
-ROTATION_SIZE = 20
-MAX_POSITIONS = 7
-START_BALANCE = 50
-BASE_RISK = 0.10  # 10% per trade
-STOP_LOSS = -0.007
-TAKE_PROFIT = 0.012
-TRAIL_TRIGGER = 0.006
-TIME_STOP = 60 * 12
+ROTATION_SIZE = 25
+MAX_POSITIONS = 5
 
-# ===== STATE =====
-exchange = ccxt.binance({'enableRateLimit': True})
-balance = START_BALANCE
-cash = START_BALANCE
+STOP_LOSS = -0.006
+TAKE_PROFIT = 0.009
+TRAIL_TRIGGER = 0.004
+
+BASE_RISK = 0.20  # 20% of balance per trade (VERY AGGRESSIVE)
+SLEEP_TIME = 2
+
+# ==========================================
+
 positions = {}
-recent_signals = []
-stats = {"trades": 0, "wins": 0, "losses": 0}
-setup_performance = {"momentum": {"wins": 0, "losses": 0}}
+wins = 0
+losses = 0
+trade_count = 0
 
-# ===== HELPERS =====
+def get_top_symbols():
+    markets = exchange.load_markets()
+    usdt_pairs = [s for s in markets if "/USDT" in s and markets[s]['active']]
+    tickers = exchange.fetch_tickers(usdt_pairs)
+
+    sorted_symbols = sorted(
+        usdt_pairs,
+        key=lambda s: tickers[s]['quoteVolume'] if s in tickers else 0,
+        reverse=True
+    )
+
+    return sorted_symbols[:50]
+
 def rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
+
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
+
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def get_top_50():
-    markets = exchange.load_markets()
-    usdt_pairs = [s for s in markets if "/USDT" in s and markets[s]['active']]
-    return usdt_pairs[:50]
+def get_data(symbol):
+    ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=50)
+    df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
+    df['ema20'] = df['c'].ewm(span=20).mean()
+    df['rsi'] = rsi(df['c'])
+    return df
 
-def position_size():
-    perf = setup_performance["momentum"]
-    total = perf["wins"] + perf["losses"]
-    if total < 5:
-        return BASE_RISK
-    winrate = perf["wins"] / total
-    if winrate > 0.55:
-        return BASE_RISK * 1.5
-    elif winrate < 0.45:
-        return BASE_RISK * 0.5
-    return BASE_RISK
+def place_market_buy(symbol, size):
+    order = exchange.create_market_buy_order(symbol, size)
+    return order
 
-# ===== TRADING LOGIC =====
-def trade_engine():
-    global cash, balance
-    coins = get_top_50()
-    rotation_index = 0
+def place_market_sell(symbol, size):
+    order = exchange.create_market_sell_order(symbol, size)
+    return order
 
-    while True:
-        batch = coins[rotation_index:rotation_index+ROTATION_SIZE]
-        rotation_index = (rotation_index + ROTATION_SIZE) % len(coins)
+def get_balance():
+    balance = exchange.fetch_balance()
+    return balance['USDT']['free']
 
-        for symbol in batch:
-            try:
-                ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=50)
-                df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
-                df['ema20'] = df['c'].ewm(span=20).mean()
-                df['rsi'] = rsi(df['c'])
-                df['vol_avg'] = df['v'].rolling(20).mean()
+def calculate_position_size(symbol):
+    balance = get_balance()
+    risk_amount = balance * BASE_RISK
+    ticker = exchange.fetch_ticker(symbol)
+    price = ticker['last']
+    size = risk_amount / price
+    return round(size, 5)
 
-                last = df.iloc[-1]
-                prev = df.iloc[-2]
+# ================= MAIN LOOP =================
 
-                momentum = (last['c'] - prev['c']) / prev['c']
+symbols = get_top_symbols()
 
-                # ENTRY
-                if (symbol not in positions and
-                    len(positions) < MAX_POSITIONS and
-                    last['rsi'] > 40 and
-                    last['c'] > last['ema20'] and
-                    last['v'] > last['vol_avg'] * 1.5 and
-                    momentum > 0.004):
+print("🔥 Ultra Aggressive Adaptive Trader Started")
 
-                    size_pct = position_size()
-                    allocation = cash * size_pct
-                    qty = allocation / last['c']
+while True:
 
-                    positions[symbol] = {
-                        "entry": last['c'],
-                        "qty": qty,
-                        "time": time.time(),
-                        "trail": None
-                    }
+    for symbol in symbols[:ROTATION_SIZE]:
 
-                    cash -= allocation
-                    recent_signals.insert(0, f"Entered {symbol}")
-                    recent_signals[:] = recent_signals[:20]
+        try:
+            df = get_data(symbol)
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
 
-                # EXIT
-                if symbol in positions:
-                    entry = positions[symbol]["entry"]
-                    pnl = (last['c'] - entry) / entry
+            momentum = (last['c'] - prev['c']) / prev['c']
 
-                    if pnl >= TRAIL_TRIGGER:
-                        positions[symbol]["trail"] = last['c'] * 0.995
+            # ENTRY
+            if (symbol not in positions and
+                len(positions) < MAX_POSITIONS and
+                last['rsi'] > 35 and
+                last['c'] > last['ema20'] and
+                momentum > 0.002):
 
-                    trail_hit = (
-                        positions[symbol]["trail"] and
-                        last['c'] < positions[symbol]["trail"]
-                    )
+                size = calculate_position_size(symbol)
+                order = place_market_buy(symbol, size)
 
-                    if (pnl <= STOP_LOSS or
-                        pnl >= TAKE_PROFIT or
-                        trail_hit or
-                        time.time() - positions[symbol]["time"] > TIME_STOP):
+                positions[symbol] = {
+                    'entry': last['c'],
+                    'size': size,
+                    'trail_active': False
+                }
 
-                        qty = positions[symbol]["qty"]
-                        cash += qty * last['c']
-                        stats["trades"] += 1
+                print(f"{datetime.now()} BUY {symbol} @ {last['c']}")
+                trade_count += 1
 
-                        if pnl > 0:
-                            stats["wins"] += 1
-                            setup_performance["momentum"]["wins"] += 1
-                        else:
-                            stats["losses"] += 1
-                            setup_performance["momentum"]["losses"] += 1
+            # MANAGEMENT
+            if symbol in positions:
+                entry = positions[symbol]['entry']
+                current = last['c']
+                change = (current - entry) / entry
 
-                        recent_signals.insert(0, f"Exited {symbol} ({round(pnl*100,2)}%)")
-                        recent_signals[:] = recent_signals[:20]
-                        del positions[symbol]
+                # activate trailing
+                if change > TRAIL_TRIGGER:
+                    positions[symbol]['trail_active'] = True
 
-            except:
-                continue
+                # trailing stop
+                if positions[symbol]['trail_active']:
+                    STOP = -0.003
+                else:
+                    STOP = STOP_LOSS
 
-        balance = cash + sum(
-            positions[s]["qty"] *
-            exchange.fetch_ticker(s)["last"]
-            for s in positions
-        )
+                # exit conditions
+                if change <= STOP or change >= TAKE_PROFIT:
+                    size = positions[symbol]['size']
+                    place_market_sell(symbol, size)
 
-        time.sleep(5)
+                    if change > 0:
+                        wins += 1
+                        print(f"{datetime.now()} WIN {symbol} {change*100:.2f}%")
+                    else:
+                        losses += 1
+                        print(f"{datetime.now()} LOSS {symbol} {change*100:.2f}%")
 
-# ===== WEB UI =====
-@app.route("/")
-def dashboard():
-    winrate = 0
-    if stats["trades"] > 0:
-        winrate = (stats["wins"] / stats["trades"]) * 100
+                    del positions[symbol]
 
-    return render_template_string("""
-    <html>
-    <body style="background:#0f172a;color:white;font-family:sans-serif;padding:20px">
-    <h2>🔥 Adaptive Aggressive Paper Trader</h2>
+        except Exception as e:
+            continue
 
-    <div>
-    <b>Equity:</b> ${{ balance|round(2) }}<br>
-    <b>Cash:</b> ${{ cash|round(2) }}<br>
-    <b>Trades:</b> {{ trades }}<br>
-    <b>Wins:</b> {{ wins }}<br>
-    <b>Losses:</b> {{ losses }}<br>
-    <b>Win Rate:</b> {{ winrate|round(1) }}%
-    </div>
-
-    <h3>Open Positions ({{ positions|length }})</h3>
-    {% for s,p in positions.items() %}
-        {{ s }} @ {{ p.entry|round(4) }}<br>
-    {% endfor %}
-
-    <h3>Recent Signals</h3>
-    {% for sig in recent_signals %}
-        {{ sig }}<br>
-    {% endfor %}
-    </body>
-    </html>
-    """,
-    balance=balance,
-    cash=cash,
-    trades=stats["trades"],
-    wins=stats["wins"],
-    losses=stats["losses"],
-    winrate=winrate,
-    positions=positions,
-    recent_signals=recent_signals
-    )
-
-# ===== START THREAD =====
-threading.Thread(target=trade_engine, daemon=True).start()
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    print(f"Trades: {trade_count} | Wins: {wins} | Losses: {losses}")
+    time.sleep(SLEEP_TIME)
