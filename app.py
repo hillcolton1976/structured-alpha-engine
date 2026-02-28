@@ -1,10 +1,16 @@
-from flask import Flask, render_template_string
+from flask import Flask
 import requests
 import threading
 import time
 import statistics
 
 app = Flask(__name__)
+
+# =============================
+# CONFIG
+# =============================
+
+START_BALANCE = 50.0
 
 TOP_20 = [
     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
@@ -13,181 +19,170 @@ TOP_20 = [
     "NEARUSDT","UNIUSDT","APTUSDT","ARBUSDT","OPUSDT"
 ]
 
+# =============================
+# ACCOUNT STATE
+# =============================
+
+balance = START_BALANCE
+trades = 0
+wins = 0
+losses = 0
+
 price_history = {symbol: [] for symbol in TOP_20}
-live_prices = {}
 
-account = {
-    "balance": 50.0,
-    "wins": 0,
-    "losses": 0,
-    "trades": 0,
-    "position": None
-}
+# =============================
+# PRICE FETCHING
+# =============================
 
-AGGRESSION = 0.2
-TAKE_PROFIT = 0.02
-STOP_LOSS = 0.01
-
-
-def get_prices():
+def get_price(symbol):
     try:
-        url = "https://api.binance.us/api/v3/ticker/24hr"
-        data = requests.get(url, timeout=10).json()
-        prices = {}
-        for item in data:
-            if item["symbol"] in TOP_20:
-                prices[item["symbol"]] = {
-                    "price": float(item["lastPrice"]),
-                    "change": float(item["priceChangePercent"])
-                }
-        return prices
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        return float(data["price"])
     except:
-        return {}
+        return 0.0
 
+# =============================
+# MOMENTUM SCORING (SAFE)
+# =============================
 
 def calculate_scores():
     scores = {}
+
     for symbol in TOP_20:
         history = price_history[symbol]
-        if len(history) > 10:
-            change = (history[-1] - history[-10]) / history[-10]
+
+        if len(history) < 10:
+            scores[symbol] = 0
+            continue
+
+        old_price = history[-10]
+        new_price = history[-1]
+
+        if old_price == 0:
+            scores[symbol] = 0
+            continue
+
+        try:
+            change = (new_price - old_price) / old_price
             volatility = statistics.stdev(history[-10:])
             score = change * 100 - volatility
             scores[symbol] = round(score, 2)
-        else:
+        except:
             scores[symbol] = 0
+
     return scores
 
+# =============================
+# BACKGROUND TRADER LOOP
+# =============================
 
 def trader():
-    global live_prices
     while True:
-        prices = get_prices()
-        if not prices:
-            time.sleep(5)
-            continue
-
-        live_prices = prices
-
         for symbol in TOP_20:
-            price = prices[symbol]["price"]
-            price_history[symbol].append(price)
-            if len(price_history[symbol]) > 50:
-                price_history[symbol].pop(0)
+            price = get_price(symbol)
 
-        scores = calculate_scores()
-        best = max(scores, key=scores.get)
+            if price > 0:
+                history = price_history[symbol]
+                history.append(price)
 
-        # ENTER
-        if account["position"] is None and scores[best] > 0:
-            entry_price = prices[best]["price"]
-            size = account["balance"] * AGGRESSION
-            account["position"] = {
-                "symbol": best,
-                "entry": entry_price,
-                "size": size
-            }
-
-        # EXIT
-        if account["position"]:
-            symbol = account["position"]["symbol"]
-            entry = account["position"]["entry"]
-            size = account["position"]["size"]
-            current = prices[symbol]["price"]
-
-            change = (current - entry) / entry
-
-            if change >= TAKE_PROFIT or change <= -STOP_LOSS:
-                pnl = size * change
-                account["balance"] += pnl
-                account["trades"] += 1
-
-                if pnl > 0:
-                    account["wins"] += 1
-                else:
-                    account["losses"] += 1
-
-                account["position"] = None
+                # Keep last 50 prices
+                if len(history) > 50:
+                    history.pop(0)
 
         time.sleep(5)
 
-
 threading.Thread(target=trader, daemon=True).start()
 
+# =============================
+# DASHBOARD
+# =============================
 
 @app.route("/")
 def dashboard():
     scores = calculate_scores()
-    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
-    winrate = 0
-    if account["trades"] > 0:
-        winrate = round((account["wins"] / account["trades"]) * 100, 2)
+    sorted_coins = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
-    html = """
+    rows = ""
+    for symbol, score in sorted_coins:
+        latest_price = price_history[symbol][-1] if price_history[symbol] else 0
+        rows += f"""
+        <tr>
+            <td>{symbol}</td>
+            <td>${latest_price:.4f}</td>
+            <td>{score}</td>
+        </tr>
+        """
+
+    return f"""
     <html>
     <head>
-    <meta http-equiv="refresh" content="5">
-    <style>
-        body { font-family: Arial; background: #0f2027; color: white; padding: 20px;}
-        h1 { color: orange; }
-        .card { background: #203a43; padding: 15px; border-radius: 10px; margin-bottom: 20px;}
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 6px; text-align: left; }
-        th { color: #00c6ff; border-bottom: 1px solid #555; }
-        .green { color: #00ff99; }
-        .red { color: #ff4d4d; }
-    </style>
+        <meta http-equiv="refresh" content="5">
+        <style>
+            body {{
+                background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+                color: white;
+                font-family: Arial;
+                padding: 30px;
+            }}
+            h1 {{
+                color: orange;
+            }}
+            .card {{
+                background: rgba(255,255,255,0.05);
+                padding: 20px;
+                border-radius: 12px;
+                margin-bottom: 20px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+            }}
+            th, td {{
+                padding: 8px;
+                text-align: left;
+            }}
+            th {{
+                color: #00d4ff;
+            }}
+            tr:hover {{
+                background: rgba(255,255,255,0.05);
+            }}
+        </style>
     </head>
     <body>
         <h1>🔥 ELITE AI TRADER</h1>
 
         <div class="card">
             <h2>Account</h2>
-            Balance: ${{ balance }}<br>
-            Trades: {{ trades }}<br>
-            Wins: {{ wins }}<br>
-            Losses: {{ losses }}<br>
-            Win Rate: {{ winrate }}%
+            Balance: ${balance:.2f}<br>
+            Trades: {trades}<br>
+            Wins: {wins}<br>
+            Losses: {losses}<br>
         </div>
 
         <div class="card">
-            <h2>Top 20 Live Market</h2>
+            <h2>Top 20 Momentum (Live Prices)</h2>
             <table>
                 <tr>
                     <th>Symbol</th>
                     <th>Price</th>
-                    <th>24h %</th>
                     <th>Score</th>
                 </tr>
-                {% for symbol, score in scores %}
-                <tr>
-                    <td>{{ symbol }}</td>
-                    <td>${{ prices[symbol]['price'] if symbol in prices else '-' }}</td>
-                    <td class="{{ 'green' if prices[symbol]['change']|float > 0 else 'red' }}">
-                        {{ prices[symbol]['change'] if symbol in prices else '-' }}%
-                    </td>
-                    <td>{{ score }}</td>
-                </tr>
-                {% endfor %}
+                {rows}
             </table>
         </div>
 
+        <p>Auto-refreshing every 5 seconds • Live Simulation Mode</p>
     </body>
     </html>
     """
 
-    return render_template_string(
-        html,
-        balance=round(account["balance"], 2),
-        trades=account["trades"],
-        wins=account["wins"],
-        losses=account["losses"],
-        winrate=winrate,
-        scores=sorted_scores,
-        prices=live_prices
-    )
-
+# =============================
+# RUN (for local testing)
+# =============================
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
