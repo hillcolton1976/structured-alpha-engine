@@ -7,8 +7,8 @@ app = Flask(__name__)
 
 # ===== SETTINGS =====
 TIMEFRAME = '5m'
-CANDLE_LIMIT = 120
-TOP_COINS_LIMIT = 50
+CANDLE_LIMIT = 90
+TOP_COINS_LIMIT = 30
 REFRESH_SECONDS = 20
 
 exchange = ccxt.kraken({
