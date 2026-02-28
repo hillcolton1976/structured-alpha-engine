@@ -1,72 +1,155 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Rotation Engine</title>
-    <meta http-equiv="refresh" content="60">
+    <title>🔥 ELITE AI TRADER</title>
+    <meta http-equiv="refresh" content="5">
     <style>
         body {
-            font-family: Arial;
-            background: #0b132b;
-            color: white;
+            margin: 0;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+            color: #fff;
             padding: 20px;
         }
+
+        h1 {
+            color: #ffb347;
+            margin-bottom: 25px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 20px;
+        }
+
         .card {
-            background: #1c2541;
+            background: rgba(255,255,255,0.05);
             padding: 20px;
-            margin-bottom: 20px;
-            border-radius: 10px;
+            border-radius: 15px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.4);
+            backdrop-filter: blur(10px);
         }
+
+        .card h2 {
+            margin-top: 0;
+            color: #00e0ff;
+        }
+
+        .stat {
+            font-size: 18px;
+            margin: 6px 0;
+        }
+
+        .green { color: #00ff88; }
+        .red { color: #ff4d4d; }
+        .yellow { color: #ffcc00; }
+
         table {
             width: 100%;
             border-collapse: collapse;
         }
+
         th, td {
             padding: 8px;
             text-align: left;
         }
+
         th {
-            background: #3a506b;
+            border-bottom: 1px solid rgba(255,255,255,0.2);
+            color: #00e0ff;
+        }
+
+        tr:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .footer {
+            margin-top: 30px;
+            font-size: 14px;
+            color: rgba(255,255,255,0.6);
         }
     </style>
 </head>
 <body>
 
-<h1>🚀 Rotation Engine (Top 50)</h1>
+<h1>🔥 ELITE AI TRADER</h1>
 
-<div class="card">
-    <h3>Balance: ${{ balance }}</h3>
-    <p>ROI: {{ roi }}%</p>
-    <p>Last Action: {{ last_action }}</p>
+<div class="grid">
+
+    <!-- ACCOUNT -->
+    <div class="card">
+        <h2>Account</h2>
+        <div class="stat">Equity: ${{ equity }}</div>
+        <div class="stat">Balance: ${{ balance }}</div>
+        <div class="stat">Trades: {{ trades }}</div>
+        <div class="stat green">Wins: {{ wins }}</div>
+        <div class="stat red">Losses: {{ losses }}</div>
+        <div class="stat yellow">Win Rate: {{ win_rate }}%</div>
+        <div class="stat">Drawdown: {{ drawdown }}%</div>
+        <div class="stat">Aggression: {{ aggression }}%</div>
+    </div>
+
+    <!-- OPEN POSITIONS -->
+    <div class="card">
+        <h2>Open Positions</h2>
+        {% if positions %}
+        <table>
+            <tr>
+                <th>Symbol</th>
+                <th>Entry</th>
+                <th>Current</th>
+                <th>P/L</th>
+            </tr>
+            {% for p in positions %}
+            <tr>
+                <td>{{ p.symbol }}</td>
+                <td>{{ p.entry }}</td>
+                <td>{{ p.current }}</td>
+                <td class="{{ 'green' if p.pnl >= 0 else 'red' }}">
+                    {{ p.pnl }}%
+                </td>
+            </tr>
+            {% endfor %}
+        </table>
+        {% else %}
+            None
+        {% endif %}
+    </div>
+
+    <!-- TOP 20 ROTATION -->
+    <div class="card">
+        <h2>Top 20 Momentum</h2>
+        <table>
+            <tr>
+                <th>Symbol</th>
+                <th>Score</th>
+            </tr>
+            {% for coin in rotation %}
+            <tr>
+                <td>{{ coin.symbol }}</td>
+                <td>{{ coin.score }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+
+    <!-- RECENT SIGNALS -->
+    <div class="card">
+        <h2>Recent Signals</h2>
+        {% if signals %}
+            {% for s in signals %}
+                <div class="stat">{{ s }}</div>
+            {% endfor %}
+        {% else %}
+            None
+        {% endif %}
+    </div>
+
 </div>
 
-<div class="card">
-    <h3>Performance</h3>
-    <p>Total Trades: {{ total_trades }}</p>
-    <p>Wins: {{ wins }}</p>
-    <p>Losses: {{ losses }}</p>
-    <p>Win Rate: {{ win_rate }}%</p>
-</div>
-
-<div class="card">
-    <h3>Open Positions</h3>
-
-    {% if positions %}
-    <table>
-        <tr>
-            <th>Symbol</th>
-            <th>Entry</th>
-        </tr>
-        {% for symbol, pos in positions.items() %}
-        <tr>
-            <td>{{ symbol }}</td>
-            <td>{{ pos.entry }}</td>
-        </tr>
-        {% endfor %}
-    </table>
-    {% else %}
-        <p>No open positions</p>
-    {% endif %}
-
+<div class="footer">
+    Auto-refreshing every 5 seconds • Live Simulation Mode
 </div>
 
 </body>
