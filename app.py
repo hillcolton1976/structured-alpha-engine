@@ -1,268 +1,235 @@
 import ccxt
 import pandas as pd
 import numpy as np
-import threading
 import time
-from flask import Flask, render_template_string
+import threading
+from flask import Flask, jsonify
 
-app = Flask(__name__)
-
-# =============================
+# =========================
 # CONFIG
-# =============================
+# =========================
 
-TIMEFRAME = "5m"
+TIMEFRAME = "1m"
 START_BALANCE = 50
-RISK_BASE = 0.12
-TP_MULTIPLIER = 2.2
-SL_MULTIPLIER = 1.2
-MAX_POSITIONS = 2
-MIN_HOLD_SECONDS = 90
-COOLDOWN_SECONDS = 120
 
-# =============================
+BASE_RISK = 0.22
+MAX_RISK = 0.45
+
+TP_MULTIPLIER = 3.0
+SL_MULTIPLIER = 1.4
+
+MAX_POSITIONS = 5
+MIN_HOLD_SECONDS = 40
+SCAN_DELAY = 6
+
+# =========================
+# STATE
+# =========================
+
+balance = START_BALANCE
+wins = 0
+losses = 0
+trades = 0
+aggression = 1.0
+positions = {}
+recent_signals = []
+
+# =========================
 # EXCHANGE (PUBLIC ONLY)
-# =============================
+# =========================
 
 exchange = ccxt.binanceus({
     "enableRateLimit": True
 })
 
-# =============================
-# STATE
-# =============================
+# =========================
+# SYMBOL LIST
+# =========================
 
-cash = START_BALANCE
-equity = START_BALANCE
-wins = 0
-losses = 0
-trades = 0
-risk_modifier = 1.0
-loss_streak = 0
+SYMBOLS = [
+    "BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
+    "DOGE/USDT","AVAX/USDT","LINK/USDT","ADA/USDT","MATIC/USDT",
+    "LTC/USDT","DOT/USDT","SHIB/USDT","ATOM/USDT","ARB/USDT"
+]
 
-open_positions = {}
-recent_signals = []
-cooldowns = {}
+# =========================
+# DATA FUNCTIONS
+# =========================
 
-# =============================
-# INDICATORS
-# =============================
+def get_ohlcv(symbol):
+    data = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=100)
+    df = pd.DataFrame(data, columns=["ts","open","high","low","close","volume"])
 
-def calculate_indicators(df):
     df["ema_fast"] = df["close"].ewm(span=9).mean()
     df["ema_slow"] = df["close"].ewm(span=21).mean()
 
     delta = df["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    rs = gain.rolling(14).mean() / loss.rolling(14).mean()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = -delta.clip(upper=0).rolling(14).mean()
+    rs = gain / loss
     df["rsi"] = 100 - (100 / (1 + rs))
 
-    df["tr"] = np.maximum(
-        df["high"] - df["low"],
-        np.maximum(
-            abs(df["high"] - df["close"].shift()),
-            abs(df["low"] - df["close"].shift())
-        )
-    )
-    df["atr"] = df["tr"].rolling(14).mean()
-
+    df["atr"] = (df["high"] - df["low"]).rolling(14).mean()
     df["vol_ma"] = df["volume"].rolling(20).mean()
 
-    return df
+    return df.dropna()
 
-# =============================
-# SYMBOL SELECTION
-# =============================
-
-def get_symbols():
-    markets = exchange.load_markets()
-    symbols = [
-        s for s in markets
-        if "/USDT" in s and markets[s]["active"]
-    ]
-    return symbols[:25]
-
-# =============================
-# TRADING ENGINE
-# =============================
-
-def trade():
-    global cash, equity, wins, losses, trades, risk_modifier, loss_streak
-
-    symbols = get_symbols()
-    ranked = []
-
-    for symbol in symbols:
+def rank_by_volatility():
+    scored = []
+    for s in SYMBOLS:
         try:
-            ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=100)
-            df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
-            df.columns = ["time","open","high","low","close","volume"]
-            df = calculate_indicators(df)
-
-            last = df.iloc[-1]
-
-            strength = 0
-            if last["ema_fast"] > last["ema_slow"]:
-                strength += 1
-            if last["rsi"] > 55:
-                strength += 1
-            if last["volume"] > last["vol_ma"]:
-                strength += 1
-
-            ranked.append((symbol, df, strength))
+            df = get_ohlcv(s)
+            atr = df["atr"].iloc[-1]
+            price = df["close"].iloc[-1]
+            score = atr / price
+            scored.append((s, score))
         except:
             continue
 
-    ranked.sort(key=lambda x: x[2], reverse=True)
-    top = ranked[:8]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [x[0] for x in scored[:10]]
 
-    # ===== ENTRY =====
-    for symbol, df, score in top:
+# =========================
+# TRADING ENGINE
+# =========================
 
-        if symbol in open_positions:
+def evaluate_entry(symbol):
+    df = get_ohlcv(symbol)
+    last = df.iloc[-1]
+
+    strength = 0
+
+    if last["ema_fast"] > last["ema_slow"]:
+        strength += 1.5
+
+    if last["rsi"] > 58:
+        strength += 1.3
+
+    if last["volume"] > last["vol_ma"] * 1.2:
+        strength += 1.5
+
+    recent_high = df["high"].rolling(12).max().iloc[-2]
+    if last["close"] > recent_high:
+        strength += 2
+
+    volatility = last["atr"] / last["close"]
+    strength += volatility * 20
+
+    if strength < 3.5:
+        return None
+
+    return last
+
+def open_position(symbol, data):
+    global balance, aggression, trades
+
+    if len(positions) >= MAX_POSITIONS:
+        return
+
+    risk_percent = min(BASE_RISK * aggression, MAX_RISK)
+    size = balance * risk_percent
+
+    entry = data["close"]
+    atr = data["atr"]
+
+    positions[symbol] = {
+        "entry": entry,
+        "size": size,
+        "tp": entry + (atr * TP_MULTIPLIER),
+        "sl": entry - (atr * SL_MULTIPLIER),
+        "time": time.time()
+    }
+
+    recent_signals.append(f"BUY {symbol} @ {round(entry,4)}")
+
+def manage_positions():
+    global balance, wins, losses, trades, aggression
+
+    for symbol in list(positions.keys()):
+        df = get_ohlcv(symbol)
+        price = df["close"].iloc[-1]
+
+        pos = positions[symbol]
+
+        if time.time() - pos["time"] < MIN_HOLD_SECONDS:
             continue
 
-        if len(open_positions) >= MAX_POSITIONS:
-            break
+        pnl = 0
 
-        if score < 3:
+        if price >= pos["tp"]:
+            pnl = pos["size"] * 0.03
+        elif price <= pos["sl"]:
+            pnl = -pos["size"] * 0.02
+        else:
             continue
 
-        if symbol in cooldowns and time.time() < cooldowns[symbol]:
-            continue
+        balance += pnl
+        trades += 1
 
-        last = df.iloc[-1]
-        risk_amount = cash * RISK_BASE * risk_modifier
-        qty = risk_amount / last["close"]
+        if pnl > 0:
+            wins += 1
+            aggression *= 1.25
+        else:
+            losses += 1
+            aggression *= 0.65
 
-        open_positions[symbol] = {
-            "entry": last["close"],
-            "qty": qty,
-            "atr": last["atr"],
-            "time": time.time()
-        }
+        aggression = max(0.6, min(aggression, 3.0))
 
-        cash -= risk_amount
-        recent_signals.append(f"BUY {symbol} @ {round(last['close'],4)}")
+        recent_signals.append(
+            f"SELL {symbol} @ {round(price,4)} | PnL: {round(pnl,2)}"
+        )
 
-    # ===== EXIT =====
-    for symbol in list(open_positions.keys()):
-        pos = open_positions[symbol]
-        ticker = exchange.fetch_ticker(symbol)
-        price = ticker["last"]
+        del positions[symbol]
 
-        held_time = time.time() - pos["time"]
-        if held_time < MIN_HOLD_SECONDS:
-            continue
-
-        tp = pos["entry"] + (pos["atr"] * TP_MULTIPLIER)
-        sl = pos["entry"] - (pos["atr"] * SL_MULTIPLIER)
-
-        if price >= tp or price <= sl:
-            pnl = (price - pos["entry"]) * pos["qty"]
-            cash += pos["qty"] * price
-            trades += 1
-
-            if pnl > 0:
-                wins += 1
-                risk_modifier *= 1.05
-                loss_streak = 0
-            else:
-                losses += 1
-                risk_modifier *= 0.9
-                loss_streak += 1
-
-            cooldowns[symbol] = time.time() + COOLDOWN_SECONDS
-            recent_signals.append(f"SELL {symbol} @ {round(price,4)} | PnL: {round(pnl,2)}")
-
-            del open_positions[symbol]
-
-    equity = cash + sum(
-        exchange.fetch_ticker(s)["last"] * open_positions[s]["qty"]
-        for s in open_positions
-    )
-
-# =============================
-# LOOP
-# =============================
-
-def loop():
+def trading_loop():
     while True:
         try:
-            trade()
-        except:
-            pass
-        time.sleep(20)
+            volatile = rank_by_volatility()
 
-threading.Thread(target=loop, daemon=True).start()
+            for symbol in volatile:
+                if symbol not in positions:
+                    data = evaluate_entry(symbol)
+                    if data is not None:
+                        open_position(symbol, data)
 
-# =============================
-# DASHBOARD
-# =============================
+            manage_positions()
 
-TEMPLATE = """
-<html>
-<head>
-<style>
-body { background:#0f172a; color:white; font-family:Arial; padding:20px;}
-.card { background:#1e293b; padding:20px; margin-bottom:15px; border-radius:12px;}
-.green { color:#22c55e;}
-.red { color:#ef4444;}
-</style>
-<meta http-equiv="refresh" content="5">
-</head>
-<body>
+        except Exception as e:
+            print("Error:", e)
 
-<h2>🔥 Adaptive AI Trader v2</h2>
+        time.sleep(SCAN_DELAY)
 
-<div class="card">
-<h3>Account</h3>
-Equity: <b>${{equity}}</b><br>
-Cash: ${{cash}}<br>
-Trades: {{trades}}<br>
-Wins: <span class="green">{{wins}}</span><br>
-Losses: <span class="red">{{losses}}</span><br>
-Win Rate: {{winrate}}%
-</div>
+# =========================
+# FLASK APP
+# =========================
 
-<div class="card">
-<h3>Open Positions</h3>
-{% if positions %}
-{% for s,p in positions.items() %}
-<b>{{s}}</b><br>
-Entry: {{p["entry"]}}<br><br>
-{% endfor %}
-{% else %}
-None
-{% endif %}
-</div>
-
-<div class="card">
-<h3>Recent Signals</h3>
-{% for r in signals[-8:] %}
-{{r}}<br>
-{% endfor %}
-</div>
-
-</body>
-</html>
-"""
+app = Flask(__name__)
 
 @app.route("/")
-def dashboard():
-    winrate = round((wins/trades)*100,2) if trades else 0
-    return render_template_string(
-        TEMPLATE,
-        equity=round(equity,2),
-        cash=round(cash,2),
-        wins=wins,
-        losses=losses,
-        trades=trades,
-        winrate=winrate,
-        positions=open_positions,
-        signals=recent_signals
-    )
+def home():
+    equity = balance
+    win_rate = (wins / trades * 100) if trades > 0 else 0
+
+    return jsonify({
+        "Mode": "NUCLEAR AI v3",
+        "Equity": round(equity,2),
+        "Cash": round(balance,2),
+        "Trades": trades,
+        "Wins": wins,
+        "Losses": losses,
+        "Win Rate %": round(win_rate,2),
+        "Aggression": round(aggression,2),
+        "Open Positions": positions,
+        "Recent Signals": recent_signals[-10:]
+    })
+
+# =========================
+# START BOT THREAD
+# =========================
+
+thread = threading.Thread(target=trading_loop)
+thread.daemon = True
+thread.start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
