@@ -1,244 +1,184 @@
-import json
 import threading
 import time
-import random
 import requests
-from flask import Flask
-from websocket import WebSocketApp
+import random
+from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
-# =============================
-# CONFIG
-# =============================
-
+# ===== SETTINGS =====
 START_BALANCE = 50.0
-MAX_COINS = 15
-BASE_AGGRESSION = 0.20
-MIN_AGGRESSION = 0.05
-MAX_AGGRESSION = 0.50
+AGGRESSION = 0.20  # 20%
+SCAN_INTERVAL = 10  # seconds
+TAKE_PROFIT = 0.015  # 1.5%
+STOP_LOSS = 0.01  # 1%
 
-# =============================
-# ACCOUNT STATE
-# =============================
-
+# ===== ACCOUNT STATE =====
 balance = START_BALANCE
 equity = START_BALANCE
 wins = 0
 losses = 0
 trades = 0
-aggression = BASE_AGGRESSION
-
-positions = {}
-price_data = {}
+position = None
+entry_price = 0
+trade_size = 0
 recent_signals = []
 
-lock = threading.Lock()
-
-# =============================
-# GET TOP COINS (SAFE)
-# =============================
-
-def get_top_pairs():
+# ===== GET TOP USDT PAIRS =====
+def get_pairs():
     try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/24hr", timeout=5)
-        data = r.json()
-
-        if not isinstance(data, list):
-            return fallback_coins()
-
-        usdt = [x for x in data if x["symbol"].endswith("USDT")]
-        sorted_pairs = sorted(
-            usdt,
-            key=lambda x: float(x.get("quoteVolume", 0)),
-            reverse=True
-        )
-
-        return [x["symbol"].lower() for x in sorted_pairs[:MAX_COINS]]
-
+        data = requests.get("https://api.binance.com/api/v3/ticker/24hr").json()
+        usdt_pairs = [x["symbol"] for x in data if x["symbol"].endswith("USDT")]
+        return random.sample(usdt_pairs, min(20, len(usdt_pairs)))
     except:
-        return fallback_coins()
+        return ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
-def fallback_coins():
-    return [
-        "btcusdt","ethusdt","solusdt","xrpusdt",
-        "bnbusdt","adausdt","dogeusdt","linkusdt",
-        "avaxusdt","dotusdt","maticusdt","atomusdt",
-        "ltcusdt","nearusdt","filusdt"
-    ][:MAX_COINS]
+coins = get_pairs()
 
-coins = get_top_pairs()
+# ===== GET PRICE =====
+def get_price(symbol):
+    try:
+        data = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}").json()
+        return float(data["price"])
+    except:
+        return None
 
-# =============================
-# WEBSOCKET PRICE STREAM
-# =============================
-
-def on_message(ws, message):
-    data = json.loads(message)
-    symbol = data["s"].lower()
-    price = float(data["c"])
-
-    with lock:
-        price_data[symbol] = price
-
-def on_error(ws, error):
-    print("WebSocket error:", error)
-
-def on_close(ws, close_status_code, close_msg):
-    print("WebSocket closed")
-
-def on_open(ws):
-    print("WebSocket connected")
-
-def start_socket():
-    streams = "/".join([f"{c}@ticker" for c in coins])
-    url = f"wss://stream.binance.com:9443/stream?streams={streams}"
-
-    ws = WebSocketApp(
-        url,
-        on_message=lambda ws, msg: on_message(ws, json.loads(msg)["data"]),
-        on_error=on_error,
-        on_close=on_close
-    )
-
-    ws.on_open = on_open
-    ws.run_forever()
-
-# =============================
-# SELF-ADJUSTING AI LOGIC
-# =============================
-
-def adjust_aggression():
-    global aggression
-
-    if trades < 10:
-        return
-
-    win_rate = wins / trades
-
-    if win_rate > 0.6:
-        aggression = min(aggression + 0.05, MAX_AGGRESSION)
-    elif win_rate < 0.4:
-        aggression = max(aggression - 0.05, MIN_AGGRESSION)
-
+# ===== AI TRADING LOOP =====
 def trader():
     global balance, equity, wins, losses, trades
+    global position, entry_price, trade_size, AGGRESSION
 
     while True:
-        time.sleep(2)
+        try:
+            if position is None:
+                for coin in coins:
+                    price = get_price(coin)
+                    if not price:
+                        continue
 
-        with lock:
-            for symbol, price in price_data.items():
+                    # Momentum trigger (randomized breakout style)
+                    if random.random() > 0.7:
+                        trade_size = balance * AGGRESSION
+                        if trade_size < 5:
+                            continue
 
-                # OPEN TRADE
-                if symbol not in positions and balance > 5:
-                    if random.random() < aggression:
-                        size = balance * aggression
-                        qty = size / price
+                        position = coin
+                        entry_price = price
+                        balance -= trade_size
+                        recent_signals.insert(0, f"🚀 BUY {coin} @ {price:.4f}")
+                        break
 
-                        positions[symbol] = {
-                            "entry": price,
-                            "qty": qty
-                        }
+            else:
+                price = get_price(position)
+                if not price:
+                    continue
 
-                        balance -= size
-                        recent_signals.insert(0, f"🚀 BUY {symbol.upper()} @ {round(price,4)}")
+                change = (price - entry_price) / entry_price
 
-                # CLOSE TRADE
-                elif symbol in positions:
-                    entry = positions[symbol]["entry"]
-                    qty = positions[symbol]["qty"]
+                # TAKE PROFIT
+                if change >= TAKE_PROFIT:
+                    profit = trade_size * change
+                    balance += trade_size + profit
+                    wins += 1
+                    trades += 1
+                    recent_signals.insert(0, f"✅ SELL {position} +{profit:.2f}")
+                    position = None
 
-                    pnl = (price - entry) * qty
+                # STOP LOSS
+                elif change <= -STOP_LOSS:
+                    loss = trade_size * change
+                    balance += trade_size + loss
+                    losses += 1
+                    trades += 1
+                    recent_signals.insert(0, f"❌ SELL {position} {loss:.2f}")
+                    position = None
 
-                    # aggressive take profit / stop loss
-                    if pnl > entry * 0.005 or pnl < -entry * 0.005:
-                        balance += qty * price
-                        trades += 1
+                # Adaptive aggression every 10 trades
+                if trades > 0 and trades % 10 == 0:
+                    winrate = wins / trades
+                    if winrate > 0.6:
+                        AGGRESSION = min(0.35, AGGRESSION + 0.05)
+                    else:
+                        AGGRESSION = max(0.10, AGGRESSION - 0.05)
 
-                        if pnl > 0:
-                            wins += 1
-                        else:
-                            losses += 1
-
-                        recent_signals.insert(
-                            0,
-                            f"💰 SELL {symbol.upper()} @ {round(price,4)} | PnL {round(pnl,2)}"
-                        )
-
-                        del positions[symbol]
-
-            # UPDATE EQUITY
             equity = balance
-            for sym, pos in positions.items():
-                if sym in price_data:
-                    equity += pos["qty"] * price_data[sym]
+            if position:
+                price = get_price(position)
+                if price:
+                    unrealized = trade_size * ((price - entry_price) / entry_price)
+                    equity += trade_size + unrealized
 
-            adjust_aggression()
+        except Exception as e:
+            print("ERROR:", e)
 
-        if len(recent_signals) > 15:
-            recent_signals.pop()
+        time.sleep(SCAN_INTERVAL)
 
-# =============================
-# UI
-# =============================
+# ===== START THREAD =====
+threading.Thread(target=trader, daemon=True).start()
 
+# ===== UI =====
 @app.route("/")
-def dashboard():
-    win_rate = (wins / trades * 100) if trades > 0 else 0
-
-    return f"""
+def home():
+    return render_template_string("""
     <html>
     <head>
-    <meta http-equiv="refresh" content="3">
+    <title>Aggressive AI Trader</title>
     <style>
-    body {{
-        font-family: Arial;
-        background: linear-gradient(to right, #0f2027, #203a43, #2c5364);
-        color: white;
-        padding: 20px;
-    }}
-    .card {{
-        background: rgba(255,255,255,0.08);
-        padding: 20px;
-        margin-bottom: 20px;
-        border-radius: 10px;
-    }}
-    h1 {{ color: orange; }}
-    .green {{ color: #4cff88; }}
-    .red {{ color: #ff4c4c; }}
+        body {
+            background: linear-gradient(135deg,#0f2027,#203a43,#2c5364);
+            font-family: Arial;
+            color: white;
+            padding: 40px;
+        }
+        .card {
+            background: rgba(255,255,255,0.08);
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+        }
+        h1 {
+            color: orange;
+        }
     </style>
     </head>
     <body>
-        <h1>🔥 Aggressive AI Trader (WebSocket)</h1>
+        <h1>🔥 Aggressive AI Trader</h1>
 
         <div class="card">
             <h2>Account</h2>
-            <p><b>Equity:</b> ${round(equity,2)}</p>
-            <p><b>Balance:</b> ${round(balance,2)}</p>
-            <p><b>Trades:</b> {trades}</p>
-            <p class="green"><b>Wins:</b> {wins}</p>
-            <p class="red"><b>Losses:</b> {losses}</p>
-            <p><b>Win Rate:</b> {round(win_rate,2)}%</p>
-            <p><b>Aggression:</b> {round(aggression*100,1)}%</p>
+            <p><b>Equity:</b> ${{equity}}</p>
+            <p><b>Balance:</b> ${{balance}}</p>
+            <p><b>Trades:</b> {{trades}}</p>
+            <p><b>Wins:</b> {{wins}}</p>
+            <p><b>Losses:</b> {{losses}}</p>
+            <p><b>Win Rate:</b> {{winrate}}%</p>
+            <p><b>Aggression:</b> {{aggression}}%</p>
         </div>
 
         <div class="card">
-            <h2>Open Positions</h2>
-            { "<br>".join([f"{k.upper()} @ {round(v['entry'],4)}" for k,v in positions.items()]) or "None" }
+            <h2>Open Position</h2>
+            <p>{{position}}</p>
         </div>
 
         <div class="card">
             <h2>Recent Signals</h2>
-            {"<br>".join(recent_signals[:10])}
+            {% for s in signals %}
+                <p>{{s}}</p>
+            {% endfor %}
         </div>
     </body>
     </html>
-    """
+    """,
+    equity=round(equity,2),
+    balance=round(balance,2),
+    trades=trades,
+    wins=wins,
+    losses=losses,
+    winrate=round((wins/trades*100),2) if trades>0 else 0,
+    aggression=round(AGGRESSION*100,1),
+    position=position if position else "None",
+    signals=recent_signals[:10]
+    )
 
-# =============================
-# START THREADS
-# =============================
-
-threading.Thread(target=start_socket, daemon=True).start()
-threading.Thread(target=trader, daemon=True).start()
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
