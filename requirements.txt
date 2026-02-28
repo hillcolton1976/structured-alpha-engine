@@ -1,5 +1,5 @@
 flask
-gunicorn
 ccxt
 pandas
 numpy
+gunicorn
