@@ -1,140 +1,114 @@
-from flask import Flask
+from flask import Flask, render_template_string
 import requests
 import threading
 import time
-import statistics
 
 app = Flask(__name__)
 
-# =============================
-# CONFIG
-# =============================
-
 START_BALANCE = 50.0
+balance = START_BALANCE
+trades = 0
+wins = 0
+losses = 0
 
-TOP_20 = [
+symbols = [
     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
     "ADAUSDT","DOGEUSDT","AVAXUSDT","LINKUSDT","MATICUSDT",
     "TRXUSDT","DOTUSDT","LTCUSDT","BCHUSDT","ATOMUSDT",
     "NEARUSDT","UNIUSDT","APTUSDT","ARBUSDT","OPUSDT"
 ]
 
-# =============================
-# ACCOUNT STATE
-# =============================
+price_history = {s: [] for s in symbols}
 
-balance = START_BALANCE
-trades = 0
-wins = 0
-losses = 0
 
-price_history = {symbol: [] for symbol in TOP_20}
-
-# =============================
-# PRICE FETCHING
-# =============================
-
+# -------------------------
+# SAFE PRICE FETCH (Binance US)
+# -------------------------
 def get_price(symbol):
     try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        response = requests.get(url, timeout=5)
-        data = response.json()
+        url = f"https://api.binance.us/api/v3/ticker/price?symbol={symbol}"
+        r = requests.get(url, timeout=5)
+        data = r.json()
         return float(data["price"])
     except:
         return 0.0
 
-# =============================
-# MOMENTUM SCORING (SAFE)
-# =============================
 
+# -------------------------
+# SCORE CALCULATION
+# -------------------------
 def calculate_scores():
     scores = {}
 
-    for symbol in TOP_20:
+    for symbol in symbols:
         history = price_history[symbol]
 
-        if len(history) < 10:
-            scores[symbol] = 0
-            continue
-
-        old_price = history[-10]
-        new_price = history[-1]
-
-        if old_price == 0:
-            scores[symbol] = 0
-            continue
-
-        try:
-            change = (new_price - old_price) / old_price
-            volatility = statistics.stdev(history[-10:])
-            score = change * 100 - volatility
-            scores[symbol] = round(score, 2)
-        except:
+        if len(history) >= 10 and history[-10] > 0:
+            change = (history[-1] - history[-10]) / history[-10]
+            scores[symbol] = round(change * 100, 2)
+        else:
             scores[symbol] = 0
 
     return scores
 
-# =============================
-# BACKGROUND TRADER LOOP
-# =============================
 
+# -------------------------
+# BACKGROUND TRADER LOOP
+# -------------------------
 def trader():
     while True:
-        for symbol in TOP_20:
+        for symbol in symbols:
             price = get_price(symbol)
 
             if price > 0:
-                history = price_history[symbol]
-                history.append(price)
+                price_history[symbol].append(price)
 
-                # Keep last 50 prices
-                if len(history) > 50:
-                    history.pop(0)
+                if len(price_history[symbol]) > 50:
+                    price_history[symbol].pop(0)
 
         time.sleep(5)
 
+
 threading.Thread(target=trader, daemon=True).start()
 
-# =============================
-# DASHBOARD
-# =============================
 
+# -------------------------
+# DASHBOARD
+# -------------------------
 @app.route("/")
 def dashboard():
     scores = calculate_scores()
 
-    sorted_coins = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-
     rows = ""
-    for symbol, score in sorted_coins:
-        latest_price = price_history[symbol][-1] if price_history[symbol] else 0
+    for s in symbols:
+        price = price_history[s][-1] if price_history[s] else 0
         rows += f"""
         <tr>
-            <td>{symbol}</td>
-            <td>${latest_price:.4f}</td>
-            <td>{score}</td>
+            <td>{s}</td>
+            <td>${price:.4f}</td>
+            <td>{scores[s]}</td>
         </tr>
         """
 
-    return f"""
+    html = f"""
     <html>
     <head>
         <meta http-equiv="refresh" content="5">
         <style>
             body {{
-                background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
-                color: white;
                 font-family: Arial;
-                padding: 30px;
+                background: linear-gradient(135deg,#0f2027,#203a43,#2c5364);
+                color: white;
+                padding: 20px;
             }}
             h1 {{
-                color: orange;
+                color: #f5a623;
             }}
             .card {{
                 background: rgba(255,255,255,0.05);
                 padding: 20px;
-                border-radius: 12px;
                 margin-bottom: 20px;
+                border-radius: 10px;
             }}
             table {{
                 width: 100%;
@@ -145,14 +119,12 @@ def dashboard():
                 text-align: left;
             }}
             th {{
-                color: #00d4ff;
-            }}
-            tr:hover {{
-                background: rgba(255,255,255,0.05);
+                color: #00c6ff;
             }}
         </style>
     </head>
     <body>
+
         <h1>🔥 ELITE AI TRADER</h1>
 
         <div class="card">
@@ -160,7 +132,7 @@ def dashboard():
             Balance: ${balance:.2f}<br>
             Trades: {trades}<br>
             Wins: {wins}<br>
-            Losses: {losses}<br>
+            Losses: {losses}
         </div>
 
         <div class="card">
@@ -176,13 +148,13 @@ def dashboard():
         </div>
 
         <p>Auto-refreshing every 5 seconds • Live Simulation Mode</p>
+
     </body>
     </html>
     """
 
-# =============================
-# RUN (for local testing)
-# =============================
+    return render_template_string(html)
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
