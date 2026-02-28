@@ -13,12 +13,14 @@ START_BALANCE = 50
 TIMEFRAME = "1m"
 HIGHER_TIMEFRAME = "5m"
 
-BASE_RISK = 0.18
-MAX_RISK = 0.35
+BASE_RISK = 0.25
+MAX_RISK = 0.45
 
-MAX_POSITIONS = 4
-SCAN_DELAY = 8
-COOLDOWN_AFTER_LOSS = 60
+MAX_POSITIONS = 6
+SCAN_DELAY = 5
+COOLDOWN_AFTER_LOSS = 30
+
+ENTRY_SCORE_THRESHOLD = 3
 
 # =========================
 # STATE
@@ -28,7 +30,7 @@ balance = START_BALANCE
 wins = 0
 losses = 0
 trades = 0
-aggression = 1.0
+aggression = 1.2
 cooldown_until = 0
 
 positions = {}
@@ -48,16 +50,16 @@ def get_top_symbols():
         s for s in markets
         if "/USDT" in s and markets[s]["active"]
     ]
-    return usdt_pairs[:30]
+    return usdt_pairs[:50]
 
 SYMBOLS = get_top_symbols()
 
 # =========================
-# DATA FUNCTIONS
+# DATA
 # =========================
 
 def fetch_df(symbol, tf):
-    data = exchange.fetch_ohlcv(symbol, tf, limit=120)
+    data = exchange.fetch_ohlcv(symbol, tf, limit=100)
     df = pd.DataFrame(data, columns=["ts","open","high","low","close","volume"])
 
     df["ema9"] = df["close"].ewm(span=9).mean()
@@ -76,7 +78,7 @@ def fetch_df(symbol, tf):
     return df.dropna()
 
 # =========================
-# SCORING ENGINE
+# SCORING
 # =========================
 
 def score_symbol(symbol):
@@ -88,29 +90,28 @@ def score_symbol(symbol):
 
     score = 0
 
-    # Trend alignment
-    if last1["ema9"] > last1["ema21"] > last1["ema50"]:
-        score += 2
-
-    if last5["ema9"] > last5["ema21"]:
-        score += 1.5
-
-    # Momentum
-    if last1["rsi"] > 55:
+    if last1["ema9"] > last1["ema21"]:
         score += 1
 
-    # Volume expansion
-    if last1["volume"] > last1["vol_ma"] * 1.3:
-        score += 1.5
+    if last1["ema21"] > last1["ema50"]:
+        score += 1
 
-    # Volatility filter
-    if last1["atr"] / last1["close"] > 0.002:
+    if last5["ema9"] > last5["ema21"]:
+        score += 1
+
+    if last1["rsi"] > 52:
+        score += 1
+
+    if last1["volume"] > last1["vol_ma"]:
+        score += 1
+
+    if last1["atr"] / last1["close"] > 0.0015:
         score += 1
 
     return score, last1
 
 # =========================
-# POSITION MANAGEMENT
+# TRADES
 # =========================
 
 def open_trade(symbol, data):
@@ -122,8 +123,8 @@ def open_trade(symbol, data):
     entry = data["close"]
     atr = data["atr"]
 
-    tp = entry + atr * 2.5
-    sl = entry - atr * 1.3
+    tp = entry + atr * 1.8
+    sl = entry - atr * 1.1
 
     positions[symbol] = {
         "entry": entry,
@@ -146,7 +147,7 @@ def manage_trades():
         pnl = 0
 
         if price >= pos["tp"]:
-            pnl = pos["size"] * 0.035
+            pnl = pos["size"] * 0.025
         elif price <= pos["sl"]:
             pnl = -pos["size"] * 0.02
         else:
@@ -157,21 +158,21 @@ def manage_trades():
 
         if pnl > 0:
             wins += 1
-            aggression *= 1.15
+            aggression *= 1.2
         else:
             losses += 1
-            aggression *= 0.75
+            aggression *= 0.8
             cooldown_until = time.time() + COOLDOWN_AFTER_LOSS
 
-        aggression = max(0.6, min(aggression, 3))
+        aggression = max(0.8, min(aggression, 4))
 
         emoji = "🟢" if pnl > 0 else "🔴"
-        recent_signals.append(f"{emoji} SELL {symbol} | PnL: {round(pnl,2)}")
+        recent_signals.append(f"{emoji} SELL {symbol} | {round(pnl,2)}")
 
         del positions[symbol]
 
 # =========================
-# TRADING LOOP
+# LOOP
 # =========================
 
 def trading_loop():
@@ -186,12 +187,12 @@ def trading_loop():
                 for symbol in SYMBOLS:
                     if symbol not in positions:
                         score, data = score_symbol(symbol)
-                        if score > 4:
+                        if score >= ENTRY_SCORE_THRESHOLD:
                             ranked.append((score, symbol, data))
 
                 ranked.sort(reverse=True)
 
-                for r in ranked[:2]:
+                for r in ranked[:3]:
                     if len(positions) < MAX_POSITIONS:
                         open_trade(r[1], r[2])
 
@@ -217,8 +218,8 @@ def dashboard():
     <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-    body { background:#0f172a; color:white; font-family:Arial; padding:20px; }
-    .card { background:#1e293b; padding:18px; border-radius:12px; margin-bottom:15px; }
+    body { background:#111827; color:#e5e7eb; font-family:Arial; padding:20px; }
+    .card { background:#1f2937; padding:18px; border-radius:12px; margin-bottom:15px; }
     .big { font-size:22px; font-weight:bold; }
     .green{color:#22c55e;}
     .red{color:#ef4444;}
@@ -226,7 +227,7 @@ def dashboard():
     </style>
     </head>
     <body>
-    <h2>🧠 Smart Adaptive AI Trader</h2>
+    <h2>🚀 Aggressive Adaptive AI Trader</h2>
 
     <div class="card">
     <div class="big">Equity: ${{equity}}</div>
@@ -234,18 +235,14 @@ def dashboard():
     <div class="green">Wins: {{wins}}</div>
     <div class="red">Losses: {{losses}}</div>
     <div class="yellow">Win Rate: {{win_rate}}%</div>
-    <div>Aggression: {{aggression}}</div>
+    <div>Aggression Multiplier: {{aggression}}</div>
     </div>
 
     <div class="card">
     <div class="big">Open Positions</div>
-    {% if positions %}
-        {% for sym,p in positions.items() %}
-            <div>{{sym}} @ {{p["entry"]}}</div>
-        {% endfor %}
-    {% else %}
-        None
-    {% endif %}
+    {% for sym,p in positions.items() %}
+        <div>{{sym}} @ {{p["entry"]}}</div>
+    {% endfor %}
     </div>
 
     <div class="card">
