@@ -1,16 +1,14 @@
-import requests
-import math
-import statistics
 from flask import Flask, render_template_string
-from datetime import datetime
-import time
+import requests
 import threading
+import time
+import statistics
 
 app = Flask(__name__)
 
-START_BALANCE = 50.0
-MAX_POSITIONS = 5
-REFRESH_SECONDS = 5
+# ========================
+# CONFIG
+# ========================
 
 TOP_20 = [
     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
@@ -19,30 +17,26 @@ TOP_20 = [
     "NEARUSDT","UNIUSDT","APTUSDT","ARBUSDT","OPUSDT"
 ]
 
+price_history = {symbol: [] for symbol in TOP_20}
+
 account = {
-    "balance": START_BALANCE,
-    "equity": START_BALANCE,
-    "trades": 0,
+    "balance": 50.0,
+    "equity": 50.0,
     "wins": 0,
     "losses": 0,
-    "aggression": 0.20,
-    "drawdown": 0.0
+    "trades": 0,
+    "position": None
 }
 
-price_data = {s: [] for s in TOP_20}
-positions = {}
-signals = []
-peak_equity = START_BALANCE
-win_streak = 0
-loss_streak = 0
+AGGRESSION = 0.2
 
-# ---------------------------
-# DATA FETCH
-# ---------------------------
+# ========================
+# GET LIVE PRICES
+# ========================
 
 def get_prices():
     try:
-        url = "https://api.binance.com/api/v3/ticker/price"
+        url = "https://api.binance.us/api/v3/ticker/price"
         data = requests.get(url, timeout=10).json()
         prices = {}
         for item in data:
@@ -52,204 +46,139 @@ def get_prices():
     except:
         return {}
 
-# ---------------------------
-# SCORING ENGINE (ELITE)
-# ---------------------------
+# ========================
+# MOMENTUM SCORE
+# ========================
 
-def score_symbol(symbol):
-    prices = price_data[symbol]
-    if len(prices) < 6:
-        return 0
+def calculate_score(prices):
+    scores = {}
+    for symbol in TOP_20:
+        history = price_history[symbol]
+        if len(history) > 10:
+            change = (history[-1] - history[-10]) / history[-10]
+            volatility = statistics.stdev(history[-10:])
+            score = change * 100 - volatility
+            scores[symbol] = round(score, 2)
+        else:
+            scores[symbol] = 0
+    return scores
 
-    short_momentum = (prices[-1] - prices[-3]) / prices[-3]
-    mid_momentum = (prices[-1] - prices[-6]) / prices[-6]
-
-    volatility = statistics.stdev(prices[-6:]) if len(prices) >= 6 else 0
-
-    trend = 1 if prices[-1] > statistics.mean(prices[-6:]) else -1
-
-    score = (short_momentum * 3) + (mid_momentum * 2)
-    score += volatility * 0.1
-    score *= trend
-
-    return round(score * 100, 4)
-
-# ---------------------------
+# ========================
 # TRADING LOGIC
-# ---------------------------
+# ========================
 
 def trade_logic():
-    global peak_equity, win_streak, loss_streak
-
-    prices = get_prices()
-    if not prices:
-        return
-
-    for s in prices:
-        price_data[s].append(prices[s])
-        if len(price_data[s]) > 50:
-            price_data[s].pop(0)
-
-    scores = {s: score_symbol(s) for s in TOP_20}
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-
-    # Close weak positions
-    for s in list(positions.keys()):
-        if scores[s] < 0:
-            entry = positions[s]["entry"]
-            current = prices[s]
-            pnl = (current - entry) / entry
-            size = positions[s]["size"]
-            profit = size * pnl
-
-            account["balance"] += size + profit
-            account["trades"] += 1
-
-            if profit > 0:
-                account["wins"] += 1
-                win_streak += 1
-                loss_streak = 0
-                account["aggression"] = min(0.30, account["aggression"] + 0.01)
-            else:
-                account["losses"] += 1
-                loss_streak += 1
-                win_streak = 0
-                account["aggression"] = max(0.10, account["aggression"] - 0.01)
-
-            signals.append(f"{datetime.now().strftime('%H:%M:%S')} CLOSED {s} PnL: {round(profit,2)}")
-            del positions[s]
-
-    # Open strong positions
-    for s, sc in ranked:
-        if len(positions) >= MAX_POSITIONS:
-            break
-        if s not in positions and sc > 0.5:
-            allocation = account["balance"] * account["aggression"]
-            if allocation > 5:
-                account["balance"] -= allocation
-                positions[s] = {
-                    "entry": prices[s],
-                    "size": allocation
-                }
-                signals.append(f"{datetime.now().strftime('%H:%M:%S')} BUY {s} @ {prices[s]}")
-
-    # Update equity
-    equity = account["balance"]
-    for s in positions:
-        entry = positions[s]["entry"]
-        current = prices[s]
-        pnl = (current - entry) / entry
-        equity += positions[s]["size"] * (1 + pnl)
-
-    account["equity"] = round(equity,2)
-
-    if equity > peak_equity:
-        peak_equity = equity
-
-    drawdown = (peak_equity - equity) / peak_equity
-    account["drawdown"] = round(drawdown * 100,2)
-
-# ---------------------------
-# BACKGROUND LOOP
-# ---------------------------
-
-def engine_loop():
     while True:
-        trade_logic()
-        time.sleep(REFRESH_SECONDS)
+        prices = get_prices()
 
-threading.Thread(target=engine_loop, daemon=True).start()
+        if prices:
+            for symbol, price in prices.items():
+                price_history[symbol].append(price)
+                if len(price_history[symbol]) > 50:
+                    price_history[symbol].pop(0)
 
-# ---------------------------
-# DASHBOARD
-# ---------------------------
+            scores = calculate_score(prices)
+            sorted_coins = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+            best_coin = sorted_coins[0]
+
+            # Open position
+            if account["position"] is None and best_coin[1] > 0:
+                invest = account["balance"] * AGGRESSION
+                account["position"] = {
+                    "symbol": best_coin[0],
+                    "entry": prices[best_coin[0]],
+                    "amount": invest
+                }
+                account["balance"] -= invest
+
+            # Close position
+            if account["position"]:
+                symbol = account["position"]["symbol"]
+                entry = account["position"]["entry"]
+                current = prices[symbol]
+                change = (current - entry) / entry
+
+                if change > 0.01 or change < -0.01:
+                    profit = account["position"]["amount"] * change
+                    account["balance"] += account["position"]["amount"] + profit
+                    account["equity"] = account["balance"]
+                    account["trades"] += 1
+
+                    if profit > 0:
+                        account["wins"] += 1
+                    else:
+                        account["losses"] += 1
+
+                    account["position"] = None
+
+        time.sleep(5)
+
+# Start trading thread
+threading.Thread(target=trade_logic, daemon=True).start()
+
+# ========================
+# DASHBOARD UI
+# ========================
 
 @app.route("/")
 def dashboard():
+    scores = calculate_score({})
 
-    scores = {s: score_symbol(s) for s in TOP_20}
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-
-    win_rate = 0
-    if account["trades"] > 0:
-        win_rate = round((account["wins"] / account["trades"]) * 100,2)
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
     html = """
     <html>
     <head>
     <meta http-equiv="refresh" content="5">
     <style>
-    body { font-family: Arial; background: linear-gradient(135deg,#0f2027,#203a43,#2c5364); color:white; padding:20px; }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
-    .card { background:#1c2b36; padding:20px; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.4); }
-    h1 { color:#ffb347; }
-    table { width:100%; }
-    th, td { padding:6px; }
+        body { font-family: Arial; background: #0f2027; color: white; padding: 20px;}
+        h1 { color: orange; }
+        .card { background: #203a43; padding: 15px; border-radius: 10px; margin-bottom: 20px;}
+        table { width: 100%; }
+        th, td { padding: 5px; text-align: left; }
+        th { color: #00c6ff; }
     </style>
     </head>
     <body>
-    <h1>🔥 ELITE AI TRADER</h1>
+        <h1>🔥 ELITE AI TRADER</h1>
 
-    <div class="grid">
+        <div class="card">
+            <h2>Account</h2>
+            Balance: ${balance}<br>
+            Trades: {trades}<br>
+            Wins: {wins}<br>
+            Losses: {losses}<br>
+            Win Rate: {winrate}%
+        </div>
 
-    <div class="card">
-    <h3>Account</h3>
-    Equity: ${{equity}}<br>
-    Balance: ${{balance}}<br>
-    Trades: {{trades}}<br>
-    Wins: {{wins}}<br>
-    Losses: {{losses}}<br>
-    Win Rate: {{win_rate}}%<br>
-    Drawdown: {{drawdown}}%<br>
-    Aggression: {{aggression}}%
-    </div>
-
-    <div class="card">
-    <h3>Open Positions</h3>
-    {% if positions %}
-    {% for s,p in positions.items() %}
-    {{s}} - ${{p["size"]}}<br>
-    {% endfor %}
-    {% else %}
-    None
-    {% endif %}
-    </div>
-
-    <div class="card">
-    <h3>Top 20 Momentum</h3>
-    <table>
-    <tr><th>Symbol</th><th>Score</th></tr>
-    {% for s,sc in ranked %}
-    <tr><td>{{s}}</td><td>{{sc}}</td></tr>
-    {% endfor %}
-    </table>
-    </div>
-
-    <div class="card">
-    <h3>Recent Signals</h3>
-    {% for sig in signals[-10:] %}
-    {{sig}}<br>
-    {% endfor %}
-    </div>
-
-    </div>
+        <div class="card">
+            <h2>Top 20 Momentum</h2>
+            <table>
+                <tr><th>Symbol</th><th>Score</th></tr>
+                {rows}
+            </table>
+        </div>
     </body>
     </html>
     """
 
+    rows = ""
+    for symbol, score in sorted_scores:
+        rows += f"<tr><td>{symbol}</td><td>{score}</td></tr>"
+
+    winrate = 0
+    if account["trades"] > 0:
+        winrate = round((account["wins"] / account["trades"]) * 100, 2)
+
     return render_template_string(
         html,
-        equity=account["equity"],
-        balance=account["balance"],
+        balance=round(account["balance"], 2),
         trades=account["trades"],
         wins=account["wins"],
         losses=account["losses"],
-        win_rate=win_rate,
-        drawdown=account["drawdown"],
-        aggression=round(account["aggression"]*100,2),
-        positions=positions,
-        ranked=ranked,
-        signals=signals
+        winrate=winrate,
+        rows=rows
     )
 
 if __name__ == "__main__":
