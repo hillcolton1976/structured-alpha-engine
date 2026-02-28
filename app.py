@@ -1,125 +1,133 @@
 from flask import Flask, render_template_string
 import ccxt
 import pandas as pd
+import threading
 import time
 
 app = Flask(__name__)
 
 # ===== SETTINGS =====
 TIMEFRAME = '5m'
-CANDLE_LIMIT = 90
-TOP_COINS_LIMIT = 30
-REFRESH_SECONDS = 20
+CANDLE_LIMIT = 50
+REFRESH_SECONDS = 15
+COINS_PER_CYCLE = 10
 
-exchange = ccxt.kraken({
+exchange = ccxt.binance({
     'enableRateLimit': True
 })
 
-# ===== RSI FUNCTION =====
+cached_data = []
+coin_list = []
+cycle_index = 0
+
+
+# ===== RSI =====
 def rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
+
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
+
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# ===== GET TOP COINS =====
-def get_top_symbols():
+
+# ===== GET TOP 50 USDT PAIRS =====
+def load_top_coins():
     markets = exchange.load_markets()
-    symbols = [s for s in markets if "/USDT" in s and markets[s]['active']]
-    return symbols[:TOP_COINS_LIMIT]
+    usdt_pairs = [m for m in markets if m.endswith('/USDT')]
+    return usdt_pairs[:50]
 
-# ===== FETCH DATA =====
-def get_data(symbol):
-    try:
-        ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=CANDLE_LIMIT)
-        df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
-        df['ema9'] = df['c'].ewm(span=9).mean()
-        df['ema21'] = df['c'].ewm(span=21).mean()
-        df['rsi'] = rsi(df['c'])
-        return df
-    except:
-        return None
 
-# ===== SIGNAL LOGIC (AGGRESSIVE) =====
-def check_signal(df):
-    if df is None or len(df) < 30:
-        return None
+# ===== SCAN COINS =====
+def scan_cycle():
+    global cached_data, cycle_index
 
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+    while True:
+        try:
+            results = []
+            start = cycle_index
+            end = start + COINS_PER_CYCLE
+            symbols = coin_list[start:end]
 
-    # Strong breakout momentum
-    if prev['ema9'] < prev['ema21'] and last['ema9'] > last['ema21'] and last['rsi'] > 55:
-        return "🚀 BUY"
+            for symbol in symbols:
+                try:
+                    ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=CANDLE_LIMIT)
+                    df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','volume'])
 
-    # Strong breakdown
-    if prev['ema9'] > prev['ema21'] and last['ema9'] < last['ema21'] and last['rsi'] < 45:
-        return "🔻 SELL"
+                    df['rsi'] = rsi(df['close'])
+                    current_rsi = df['rsi'].iloc[-1]
+                    price = df['close'].iloc[-1]
 
-    return None
+                    signal = "NEUTRAL"
+                    if current_rsi < 30:
+                        signal = "BUY"
+                    elif current_rsi > 70:
+                        signal = "SELL"
+
+                    results.append({
+                        "symbol": symbol,
+                        "price": round(price, 4),
+                        "rsi": round(current_rsi, 2),
+                        "signal": signal
+                    })
+
+                except:
+                    pass
+
+            cached_data = results
+            cycle_index = (cycle_index + COINS_PER_CYCLE) % 50
+
+        except:
+            pass
+
+        time.sleep(10)
+
 
 # ===== ROUTE =====
 @app.route("/")
 def index():
-    symbols = get_top_symbols()
-    signals = []
-
-    for symbol in symbols:
-        df = get_data(symbol)
-        signal = check_signal(df)
-
-        if signal:
-            price = round(df['c'].iloc[-1], 4)
-            signals.append({
-                "symbol": symbol,
-                "signal": signal,
-                "price": price
-            })
-
-        time.sleep(0.1)
-
-    template = """
+    return render_template_string("""
     <html>
     <head>
-        <meta http-equiv="refresh" content="{{refresh}}">
+        <meta http-equiv="refresh" content="{{ refresh }}">
         <style>
             body { background:#111; color:#ddd; font-family:Arial; }
-            h1 { color:#ff3b3b; }
             table { width:100%; border-collapse:collapse; }
-            th, td { padding:10px; border-bottom:1px solid #333; text-align:left; }
-            tr:hover { background:#1c1c1c; }
-            .buy { color:#00ff99; font-weight:bold; }
-            .sell { color:#ff4444; font-weight:bold; }
+            th, td { padding:10px; text-align:center; }
+            th { background:#222; }
+            tr:nth-child(even) { background:#1a1a1a; }
+            .buy { color:#4CAF50; }
+            .sell { color:#f44336; }
         </style>
     </head>
     <body>
-        <h1>🔥 AGGRESSIVE TOP 50 SCANNER</h1>
+        <h2>🔥 Aggressive Scanner (Rotating Top 50)</h2>
         <table>
             <tr>
                 <th>Coin</th>
-                <th>Signal</th>
                 <th>Price</th>
+                <th>RSI</th>
+                <th>Signal</th>
             </tr>
-            {% for row in signals %}
+            {% for coin in coins %}
             <tr>
-                <td>{{row.symbol}}</td>
-                <td class="{{'buy' if 'BUY' in row.signal else 'sell'}}">
-                    {{row.signal}}
-                </td>
-                <td>{{row.price}}</td>
+                <td>{{ coin.symbol }}</td>
+                <td>${{ coin.price }}</td>
+                <td>{{ coin.rsi }}</td>
+                <td class="{{ coin.signal|lower }}">{{ coin.signal }}</td>
             </tr>
             {% endfor %}
         </table>
-        <p>Auto refresh: {{refresh}}s</p>
     </body>
     </html>
-    """
+    """, coins=cached_data, refresh=REFRESH_SECONDS)
 
-    return render_template_string(template, signals=signals, refresh=REFRESH_SECONDS)
 
-# ===== START =====
+# ===== START BACKGROUND THREAD =====
 if __name__ == "__main__":
+    coin_list = load_top_coins()
+    threading.Thread(target=scan_cycle, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)
