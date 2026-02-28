@@ -6,6 +6,9 @@ import statistics
 
 app = Flask(__name__)
 
+# -------------------------
+# SETTINGS
+# -------------------------
 START_BALANCE = 50.0
 balance = START_BALANCE
 trades = 0
@@ -13,13 +16,14 @@ wins = 0
 losses = 0
 
 MAX_POSITIONS = 5
-BASE_POSITION_SIZE = 8  # adaptive sizing base
+BASE_POSITION_SIZE = 10
 
+# Smaller / more volatile coins
 symbols = [
-    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
-    "ADAUSDT","DOGEUSDT","AVAXUSDT","LINKUSDT","MATICUSDT",
-    "TRXUSDT","DOTUSDT","LTCUSDT","BCHUSDT","ATOMUSDT",
-    "NEARUSDT","UNIUSDT","APTUSDT","ARBUSDT","OPUSDT"
+    "PEPEUSDT","WIFUSDT","BONKUSDT","FLOKIUSDT","JASMYUSDT",
+    "SUIUSDT","SEIUSDT","TIAUSDT","PYTHUSDT","INJUSDT",
+    "ORDIUSDT","RNDRUSDT","FETUSDT","GALAUSDT","BLURUSDT",
+    "DYDXUSDT","IMXUSDT","OPUSDT","ARBUSDT","APTUSDT"
 ]
 
 price_history = {s: [] for s in symbols}
@@ -28,7 +32,7 @@ aggression_multiplier = 1.0
 
 
 # -------------------------
-# LIVE PRICE
+# GET LIVE PRICE
 # -------------------------
 def get_price(symbol):
     try:
@@ -36,7 +40,7 @@ def get_price(symbol):
         r = requests.get(url, timeout=5)
         return float(r.json()["price"])
     except:
-        return 0.0
+        return None
 
 
 # -------------------------
@@ -53,7 +57,7 @@ def ema(prices, period):
 
 
 # -------------------------
-# SMART SCORE
+# SCORE SYSTEM
 # -------------------------
 def calculate_scores():
     scores = {}
@@ -61,22 +65,26 @@ def calculate_scores():
     for symbol in symbols:
         history = price_history[symbol]
 
-        if len(history) < 20 or history[-15] == 0:
+        if len(history) < 20:
             scores[symbol] = 0
             continue
 
-        short_momentum = (history[-1] - history[-5]) / history[-5]
-        medium_momentum = (history[-1] - history[-15]) / history[-15]
+        if history[-5] == 0 or history[-15] == 0:
+            scores[symbol] = 0
+            continue
+
+        short = (history[-1] - history[-5]) / history[-5]
+        medium = (history[-1] - history[-15]) / history[-15]
 
         fast = ema(history[-20:], 5)
         slow = ema(history[-20:], 12)
 
-        trend_boost = 1 if fast and slow and fast > slow else -1
+        trend = 1 if fast and slow and fast > slow else -1
 
         volatility = statistics.pstdev(history[-15:]) if len(history[-15:]) > 5 else 0
 
-        score = (short_momentum * 0.6 + medium_momentum * 0.4)
-        score *= trend_boost
+        score = (short * 0.6 + medium * 0.4)
+        score *= trend
         score *= (1 + volatility)
 
         scores[symbol] = round(score * 100, 2)
@@ -85,48 +93,46 @@ def calculate_scores():
 
 
 # -------------------------
-# TRADER
+# TRADING LOOP
 # -------------------------
 def trader():
     global balance, trades, wins, losses, aggression_multiplier
 
     while True:
 
-        # update prices
         for s in symbols:
             price = get_price(s)
-            if price > 0:
+            if price and price > 0:
                 price_history[s].append(price)
-                if len(price_history[s]) > 50:
+                if len(price_history[s]) > 60:
                     price_history[s].pop(0)
 
         scores = calculate_scores()
-
-        # BUY LOGIC
         sorted_coins = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
-        for symbol, score in sorted_coins[:8]:  # top 8 focus
-            if score > 0.8 and symbol not in positions:
+        # BUY
+        for symbol, score in sorted_coins[:8]:
+            if score > 0.9 and symbol not in positions:
                 if len(positions) < MAX_POSITIONS and balance > 5:
 
-                    position_size = BASE_POSITION_SIZE * aggression_multiplier
-                    position_size = min(position_size, balance)
+                    size = BASE_POSITION_SIZE * aggression_multiplier
+                    size = min(size, balance)
 
                     entry = price_history[symbol][-1]
-                    positions[symbol] = (entry, position_size)
+                    quantity = size / entry
 
-                    balance -= position_size
+                    positions[symbol] = (entry, size, quantity)
+                    balance -= size
                     trades += 1
 
-        # SELL LOGIC
+        # SELL
         for symbol in list(positions.keys()):
-            entry, size = positions[symbol]
+            entry, size, quantity = positions[symbol]
             current = price_history[symbol][-1]
 
             change = (current - entry) / entry
 
-            # aggressive exits
-            if change >= 0.018 or change <= -0.012:
+            if change >= 0.025 or change <= -0.015:
 
                 profit = size * change
                 balance += size + profit
@@ -156,30 +162,31 @@ def dashboard():
 
     scores = calculate_scores()
 
+    total_positions_value = 0
     rows = ""
+
     for s in symbols:
         price = price_history[s][-1] if price_history[s] else 0
-        rows += f"""
-        <tr>
-            <td>{s}</td>
-            <td>${price:.4f}</td>
-            <td>{scores[s]}</td>
-        </tr>
-        """
+        rows += f"<tr><td>{s}</td><td>${price:.6f}</td><td>{scores[s]}</td></tr>"
 
     open_rows = ""
-    for s, (entry, size) in positions.items():
+    for s, (entry, size, quantity) in positions.items():
         current = price_history[s][-1]
+        value = quantity * current
+        total_positions_value += value
         pnl = ((current - entry) / entry) * 100
+
         open_rows += f"""
         <tr>
             <td>{s}</td>
-            <td>${entry:.4f}</td>
-            <td>${current:.4f}</td>
+            <td>{quantity:.4f}</td>
+            <td>${entry:.6f}</td>
+            <td>${current:.6f}</td>
             <td>{pnl:.2f}%</td>
         </tr>
         """
 
+    total_equity = balance + total_positions_value
     winrate = round((wins / trades) * 100, 2) if trades > 0 else 0
 
     html = f"""
@@ -200,49 +207,42 @@ def dashboard():
                 margin-bottom:20px;
                 border-radius:10px;
             }}
-            table {{
-                width:100%;
-                border-collapse:collapse;
-            }}
-            th,td {{
-                padding:8px;
-                text-align:left;
-            }}
+            table {{ width:100%; border-collapse:collapse; }}
+            th,td {{ padding:8px; text-align:left; }}
             th {{ color:#00c6ff; }}
         </style>
     </head>
     <body>
 
-    <h1>🔥 ELITE AI TRADER v3</h1>
+    <h1>🔥 ELITE SMALL-CAP AI TRADER</h1>
 
     <div class="card">
         <h2>Account</h2>
-        Balance: ${balance:.2f}<br>
+        Cash Balance: ${balance:.2f}<br>
+        Positions Value: ${total_positions_value:.2f}<br>
+        Total Equity: <b>${total_equity:.2f}</b><br><br>
         Trades: {trades}<br>
         Wins: {wins}<br>
         Losses: {losses}<br>
         Win Rate: {winrate}%<br>
-        Open Positions: {len(positions)}<br>
-        Aggression Multiplier: {aggression_multiplier:.2f}
+        Aggression: {aggression_multiplier:.2f}
     </div>
 
     <div class="card">
         <h2>Open Positions</h2>
         <table>
-        <tr><th>Symbol</th><th>Entry</th><th>Current</th><th>P/L</th></tr>
-        {open_rows if open_rows else "<tr><td colspan='4'>None</td></tr>"}
+        <tr><th>Coin</th><th>Quantity</th><th>Entry</th><th>Current</th><th>P/L</th></tr>
+        {open_rows if open_rows else "<tr><td colspan='5'>None</td></tr>"}
         </table>
     </div>
 
     <div class="card">
-        <h2>Top 20 Momentum (Live)</h2>
+        <h2>Live Market Scores</h2>
         <table>
-        <tr><th>Symbol</th><th>Price</th><th>Score</th></tr>
+        <tr><th>Coin</th><th>Price</th><th>Score</th></tr>
         {rows}
         </table>
     </div>
-
-    <p>Auto-refreshing every 4 seconds • Adaptive AI Mode</p>
 
     </body>
     </html>
