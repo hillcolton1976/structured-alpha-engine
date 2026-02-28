@@ -1,4 +1,3 @@
 flask
+websockets
 requests
-websocket-client
-gunicorn
