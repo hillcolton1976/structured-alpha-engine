@@ -6,10 +6,6 @@ import statistics
 
 app = Flask(__name__)
 
-# ========================
-# CONFIG
-# ========================
-
 TOP_20 = [
     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
     "ADAUSDT","DOGEUSDT","AVAXUSDT","LINKUSDT","MATICUSDT",
@@ -21,7 +17,6 @@ price_history = {symbol: [] for symbol in TOP_20}
 
 account = {
     "balance": 50.0,
-    "equity": 50.0,
     "wins": 0,
     "losses": 0,
     "trades": 0,
@@ -30,9 +25,6 @@ account = {
 
 AGGRESSION = 0.2
 
-# ========================
-# GET LIVE PRICES
-# ========================
 
 def get_prices():
     try:
@@ -46,11 +38,8 @@ def get_prices():
     except:
         return {}
 
-# ========================
-# MOMENTUM SCORE
-# ========================
 
-def calculate_score(prices):
+def calculate_scores():
     scores = {}
     for symbol in TOP_20:
         history = price_history[symbol]
@@ -63,69 +52,29 @@ def calculate_score(prices):
             scores[symbol] = 0
     return scores
 
-# ========================
-# TRADING LOGIC
-# ========================
 
-def trade_logic():
+def trader():
     while True:
         prices = get_prices()
-
         if prices:
             for symbol, price in prices.items():
                 price_history[symbol].append(price)
                 if len(price_history[symbol]) > 50:
                     price_history[symbol].pop(0)
-
-            scores = calculate_score(prices)
-            sorted_coins = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-
-            best_coin = sorted_coins[0]
-
-            # Open position
-            if account["position"] is None and best_coin[1] > 0:
-                invest = account["balance"] * AGGRESSION
-                account["position"] = {
-                    "symbol": best_coin[0],
-                    "entry": prices[best_coin[0]],
-                    "amount": invest
-                }
-                account["balance"] -= invest
-
-            # Close position
-            if account["position"]:
-                symbol = account["position"]["symbol"]
-                entry = account["position"]["entry"]
-                current = prices[symbol]
-                change = (current - entry) / entry
-
-                if change > 0.01 or change < -0.01:
-                    profit = account["position"]["amount"] * change
-                    account["balance"] += account["position"]["amount"] + profit
-                    account["equity"] = account["balance"]
-                    account["trades"] += 1
-
-                    if profit > 0:
-                        account["wins"] += 1
-                    else:
-                        account["losses"] += 1
-
-                    account["position"] = None
-
         time.sleep(5)
 
-# Start trading thread
-threading.Thread(target=trade_logic, daemon=True).start()
 
-# ========================
-# DASHBOARD UI
-# ========================
+threading.Thread(target=trader, daemon=True).start()
+
 
 @app.route("/")
 def dashboard():
-    scores = calculate_score({})
-
+    scores = calculate_scores()
     sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+    winrate = 0
+    if account["trades"] > 0:
+        winrate = round((account["wins"] / account["trades"]) * 100, 2)
 
     html = """
     <html>
@@ -135,9 +84,9 @@ def dashboard():
         body { font-family: Arial; background: #0f2027; color: white; padding: 20px;}
         h1 { color: orange; }
         .card { background: #203a43; padding: 15px; border-radius: 10px; margin-bottom: 20px;}
-        table { width: 100%; }
-        th, td { padding: 5px; text-align: left; }
-        th { color: #00c6ff; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 6px; text-align: left; }
+        th { color: #00c6ff; border-bottom: 1px solid #555; }
     </style>
     </head>
     <body>
@@ -145,31 +94,31 @@ def dashboard():
 
         <div class="card">
             <h2>Account</h2>
-            Balance: ${balance}<br>
-            Trades: {trades}<br>
-            Wins: {wins}<br>
-            Losses: {losses}<br>
-            Win Rate: {winrate}%
+            Balance: ${{ balance }}<br>
+            Trades: {{ trades }}<br>
+            Wins: {{ wins }}<br>
+            Losses: {{ losses }}<br>
+            Win Rate: {{ winrate }}%
         </div>
 
         <div class="card">
             <h2>Top 20 Momentum</h2>
             <table>
-                <tr><th>Symbol</th><th>Score</th></tr>
-                {rows}
+                <tr>
+                    <th>Symbol</th>
+                    <th>Score</th>
+                </tr>
+                {% for symbol, score in scores %}
+                <tr>
+                    <td>{{ symbol }}</td>
+                    <td>{{ score }}</td>
+                </tr>
+                {% endfor %}
             </table>
         </div>
     </body>
     </html>
     """
-
-    rows = ""
-    for symbol, score in sorted_scores:
-        rows += f"<tr><td>{symbol}</td><td>{score}</td></tr>"
-
-    winrate = 0
-    if account["trades"] > 0:
-        winrate = round((account["wins"] / account["trades"]) * 100, 2)
 
     return render_template_string(
         html,
@@ -178,8 +127,9 @@ def dashboard():
         wins=account["wins"],
         losses=account["losses"],
         winrate=winrate,
-        rows=rows
+        scores=sorted_scores
     )
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
