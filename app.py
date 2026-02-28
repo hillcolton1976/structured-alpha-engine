@@ -5,47 +5,121 @@ import time
 
 app = Flask(__name__)
 
-# ================= CONFIG =================
+# ===== SETTINGS =====
+TIMEFRAME = '5m'
+CANDLE_LIMIT = 120
+TOP_COINS_LIMIT = 50
+REFRESH_SECONDS = 20
 
-TIMEFRAME = '1m'
-CANDLE_LIMIT = 80
-START_BALANCE = 50.0
-MAX_POSITIONS = 2
-POSITION_SIZE = 0.50
-SCAN_INTERVAL = 20
-TRAILING_STOP = 0.975
+exchange = ccxt.kraken({
+    'enableRateLimit': True
+})
 
-SYMBOLS = [
-'ETH/USDT','SOL/USDT','XRP/USDT','ADA/USDT',
-'AVAX/USDT','LINK/USDT','BNB/USDT','DOGE/USDT','MATIC/USDT',
-'ATOM/USDT','NEAR/USDT','ARB/USDT','OP/USDT','INJ/USDT',
-'APT/USDT','SUI/USDT','LTC/USDT','FIL/USDT','RNDR/USDT'
-]
-
-BTC_SYMBOL = 'BTC/USDT'
-
-exchange = ccxt.coinbase()
-
-# ================= STATE =================
-
-balance = START_BALANCE
-positions = {}
-total_trades = 0
-wins = 0
-losses = 0
-last_action = "Booting..."
-recent_signals = []
-last_scan_time = 0
-
-# ================= INDICATORS =================
-
+# ===== RSI FUNCTION =====
 def rsi(series, period=14):
     delta = series.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = -delta.clip(upper=0).rolling(period).mean()
-    rs = gain / loss
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+    rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
+# ===== GET TOP COINS =====
+def get_top_symbols():
+    markets = exchange.load_markets()
+    symbols = [s for s in markets if "/USDT" in s and markets[s]['active']]
+    return symbols[:TOP_COINS_LIMIT]
+
+# ===== FETCH DATA =====
 def get_data(symbol):
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME
+        ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=CANDLE_LIMIT)
+        df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
+        df['ema9'] = df['c'].ewm(span=9).mean()
+        df['ema21'] = df['c'].ewm(span=21).mean()
+        df['rsi'] = rsi(df['c'])
+        return df
+    except:
+        return None
+
+# ===== SIGNAL LOGIC (AGGRESSIVE) =====
+def check_signal(df):
+    if df is None or len(df) < 30:
+        return None
+
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    # Strong breakout momentum
+    if prev['ema9'] < prev['ema21'] and last['ema9'] > last['ema21'] and last['rsi'] > 55:
+        return "🚀 BUY"
+
+    # Strong breakdown
+    if prev['ema9'] > prev['ema21'] and last['ema9'] < last['ema21'] and last['rsi'] < 45:
+        return "🔻 SELL"
+
+    return None
+
+# ===== ROUTE =====
+@app.route("/")
+def index():
+    symbols = get_top_symbols()
+    signals = []
+
+    for symbol in symbols:
+        df = get_data(symbol)
+        signal = check_signal(df)
+
+        if signal:
+            price = round(df['c'].iloc[-1], 4)
+            signals.append({
+                "symbol": symbol,
+                "signal": signal,
+                "price": price
+            })
+
+        time.sleep(0.1)
+
+    template = """
+    <html>
+    <head>
+        <meta http-equiv="refresh" content="{{refresh}}">
+        <style>
+            body { background:#111; color:#ddd; font-family:Arial; }
+            h1 { color:#ff3b3b; }
+            table { width:100%; border-collapse:collapse; }
+            th, td { padding:10px; border-bottom:1px solid #333; text-align:left; }
+            tr:hover { background:#1c1c1c; }
+            .buy { color:#00ff99; font-weight:bold; }
+            .sell { color:#ff4444; font-weight:bold; }
+        </style>
+    </head>
+    <body>
+        <h1>🔥 AGGRESSIVE TOP 50 SCANNER</h1>
+        <table>
+            <tr>
+                <th>Coin</th>
+                <th>Signal</th>
+                <th>Price</th>
+            </tr>
+            {% for row in signals %}
+            <tr>
+                <td>{{row.symbol}}</td>
+                <td class="{{'buy' if 'BUY' in row.signal else 'sell'}}">
+                    {{row.signal}}
+                </td>
+                <td>{{row.price}}</td>
+            </tr>
+            {% endfor %}
+        </table>
+        <p>Auto refresh: {{refresh}}s</p>
+    </body>
+    </html>
+    """
+
+    return render_template_string(template, signals=signals, refresh=REFRESH_SECONDS)
+
+# ===== START =====
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
