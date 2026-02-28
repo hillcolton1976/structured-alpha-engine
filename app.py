@@ -2,32 +2,22 @@ import asyncio
 import json
 import math
 import statistics
+import threading
+import time
 from datetime import datetime
 
 import requests
-import websockets
-from flask import Flask, render_template_string
+from flask import Flask, render_template
 
 app = Flask(__name__)
 
+# ==========================
+# CONFIG
+# ==========================
+
 START_BALANCE = 50.0
-
-account = {
-    "balance": START_BALANCE,
-    "equity": START_BALANCE,
-    "trades": 0,
-    "wins": 0,
-    "losses": 0,
-    "aggression": 0.18,
-    "drawdown": 0.0,
-}
-
-positions = {}
-signals = []
-price_data = {}
-confidence_scores = {}
-win_streak = 0
-loss_streak = 0
+MAX_POSITIONS = 5
+BASE_AGGRESSION = 0.20
 
 TOP_20 = [
     "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
@@ -36,229 +26,207 @@ TOP_20 = [
     "NEARUSDT","UNIUSDT","APTUSDT","ARBUSDT","OPUSDT"
 ]
 
-# ---------------------------
-# Indicator Functions
-# ---------------------------
+# ==========================
+# ACCOUNT STATE
+# ==========================
 
-def ema(values, period):
-    if len(values) < period:
+account = {
+    "balance": START_BALANCE,
+    "equity": START_BALANCE,
+    "trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "aggression": BASE_AGGRESSION,
+    "drawdown": 0.0
+}
+
+positions = {}
+signals = []
+price_data = {}
+equity_peak = START_BALANCE
+
+
+# ==========================
+# HELPERS
+# ==========================
+
+def get_price(symbol):
+    try:
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        r = requests.get(url, timeout=5)
+        return float(r.json()["price"])
+    except:
         return None
-    k = 2 / (period + 1)
-    ema_val = values[0]
-    for v in values[1:]:
-        ema_val = v * k + ema_val * (1 - k)
-    return ema_val
 
-def rsi(values, period=14):
-    if len(values) < period + 1:
-        return 50
-    gains = []
-    losses = []
-    for i in range(1, period+1):
-        diff = values[-i] - values[-i-1]
-        if diff > 0:
-            gains.append(diff)
-        else:
-            losses.append(abs(diff))
-    avg_gain = sum(gains)/period if gains else 0.0001
-    avg_loss = sum(losses)/period if losses else 0.0001
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
 
-def atr(values, period=14):
-    if len(values) < period+1:
+def calculate_momentum(symbol):
+    if symbol not in price_data or len(price_data[symbol]) < 10:
         return 0
-    trs = [abs(values[-i] - values[-i-1]) for i in range(1, period+1)]
-    return sum(trs) / period
+    prices = price_data[symbol]
+    return ((prices[-1] - prices[0]) / prices[0]) * 100
 
-# ---------------------------
-# Trading Logic
-# ---------------------------
 
-def evaluate_symbol(symbol):
-    global account
-    prices = price_data.get(symbol, [])
-    if len(prices) < 50:
+def update_prices():
+    for coin in TOP_20:
+        price = get_price(coin)
+        if price:
+            if coin not in price_data:
+                price_data[coin] = []
+            price_data[coin].append(price)
+            if len(price_data[coin]) > 20:
+                price_data[coin].pop(0)
+
+
+def open_trade(symbol, price):
+    if len(positions) >= MAX_POSITIONS:
         return
 
-    ema_fast = ema(prices[-30:], 9)
-    ema_slow = ema(prices[-30:], 21)
-    current_rsi = rsi(prices)
-    current_atr = atr(prices)
-
-    volume_factor = 1  # placeholder (can upgrade later)
-
-    confidence = 0
-
-    if ema_fast and ema_slow and ema_fast > ema_slow:
-        confidence += 30
-    if 55 < current_rsi < 72:
-        confidence += 25
-    if current_atr > statistics.mean(prices[-20:]) * 0.002:
-        confidence += 25
-    confidence += 20  # base momentum score
-
-    confidence_scores[symbol] = confidence
-
-    if (
-        confidence >= 75
-        and symbol not in positions
-        and len(positions) < 5
-    ):
-        enter_trade(symbol, prices[-1], current_atr)
-
-def enter_trade(symbol, price, atr_val):
-    global account
-
-    risk_amount = account["balance"] * account["aggression"]
-    size = risk_amount / price
-
-    stop = price - (atr_val * 1.5)
-    target = price + (atr_val * 2)
+    risk = account["balance"] * account["aggression"]
+    if risk <= 1:
+        return
 
     positions[symbol] = {
         "entry": price,
-        "size": size,
-        "stop": stop,
-        "target": target,
+        "size": risk / price
     }
 
-    account["balance"] -= risk_amount
+    account["balance"] -= risk
+    signals.insert(0, f"{datetime.now().strftime('%H:%M:%S')} BUY {symbol}")
+    account["trades"] += 1
 
-    signals.append(f"{datetime.now().strftime('%H:%M:%S')} ENTRY {symbol}")
 
-def update_positions():
-    global account, win_streak, loss_streak
+def close_trade(symbol, price):
+    global equity_peak
 
-    for symbol in list(positions.keys()):
-        price = price_data[symbol][-1]
-        pos = positions[symbol]
+    pos = positions[symbol]
+    entry = pos["entry"]
+    size = pos["size"]
 
-        if price <= pos["stop"] or price >= pos["target"]:
-            pnl = (price - pos["entry"]) * pos["size"]
-            account["balance"] += pos["size"] * price
-            account["trades"] += 1
+    value = size * price
+    pnl = value - (size * entry)
 
-            if pnl > 0:
-                account["wins"] += 1
-                win_streak += 1
-                loss_streak = 0
-                account["aggression"] = min(0.25, account["aggression"] + 0.02)
-            else:
-                account["losses"] += 1
-                loss_streak += 1
-                win_streak = 0
-                account["aggression"] = max(0.10, account["aggression"] - 0.03)
+    account["balance"] += value
 
-            signals.append(f"{datetime.now().strftime('%H:%M:%S')} EXIT {symbol}")
-            del positions[symbol]
+    if pnl > 0:
+        account["wins"] += 1
+    else:
+        account["losses"] += 1
 
-    account["equity"] = account["balance"] + sum(
-        (price_data[s][-1] - positions[s]["entry"]) * positions[s]["size"]
-        for s in positions
-    )
+    del positions[symbol]
 
-# ---------------------------
-# WebSocket Live Feed
-# ---------------------------
+    signals.insert(0, f"{datetime.now().strftime('%H:%M:%S')} SELL {symbol} P/L {round(pnl,2)}")
 
-async def stream_prices():
-    streams = "/".join([f"{s.lower()}@trade" for s in TOP_20])
-    url = f"wss://stream.binance.com:9443/stream?streams={streams}"
+    account["equity"] = account["balance"]
 
-    async with websockets.connect(url) as ws:
-        while True:
-            data = json.loads(await ws.recv())
-            symbol = data["data"]["s"]
-            price = float(data["data"]["p"])
+    equity_peak = max(equity_peak, account["equity"])
+    dd = (equity_peak - account["equity"]) / equity_peak * 100
+    account["drawdown"] = round(dd, 2)
 
-            price_data.setdefault(symbol, []).append(price)
-            if len(price_data[symbol]) > 200:
-                price_data[symbol].pop(0)
+    adjust_aggression()
 
-            evaluate_symbol(symbol)
-            update_positions()
 
-# ---------------------------
-# UI
-# ---------------------------
+def adjust_aggression():
+    total = account["wins"] + account["losses"]
+    if total < 5:
+        return
+
+    win_rate = account["wins"] / total
+
+    if win_rate > 0.6:
+        account["aggression"] = min(0.35, account["aggression"] + 0.02)
+    elif win_rate < 0.4:
+        account["aggression"] = max(0.10, account["aggression"] - 0.02)
+
+
+def trading_loop():
+    while True:
+        update_prices()
+
+        rotation = sorted(
+            TOP_20,
+            key=lambda x: calculate_momentum(x),
+            reverse=True
+        )
+
+        # Try opening top movers
+        for coin in rotation[:5]:
+            if coin not in positions:
+                momentum = calculate_momentum(coin)
+                if momentum > 0.3:
+                    price = price_data[coin][-1]
+                    open_trade(coin, price)
+
+        # Manage open positions
+        for coin in list(positions.keys()):
+            price = price_data[coin][-1]
+            entry = positions[coin]["entry"]
+            change = (price - entry) / entry * 100
+
+            if change > 1.0 or change < -1.0:
+                close_trade(coin, price)
+
+        # Update equity
+        unrealized = 0
+        for coin in positions:
+            price = price_data[coin][-1]
+            entry = positions[coin]["entry"]
+            size = positions[coin]["size"]
+            unrealized += size * price
+
+        account["equity"] = account["balance"] + unrealized
+
+        time.sleep(5)
+
+
+# ==========================
+# FLASK ROUTES
+# ==========================
 
 @app.route("/")
 def dashboard():
-    winrate = (
-        (account["wins"] / account["trades"]) * 100
-        if account["trades"] > 0
-        else 0
+    total = account["wins"] + account["losses"]
+    win_rate = round((account["wins"]/total)*100, 2) if total > 0 else 0
+
+    pos_list = []
+    for coin in positions:
+        entry = positions[coin]["entry"]
+        current = price_data.get(coin, [entry])[-1]
+        pnl = round((current-entry)/entry*100, 2)
+        pos_list.append({
+            "symbol": coin,
+            "entry": round(entry,4),
+            "current": round(current,4),
+            "pnl": pnl
+        })
+
+    rotation_list = []
+    for coin in sorted(TOP_20, key=lambda x: calculate_momentum(x), reverse=True)[:20]:
+        rotation_list.append({
+            "symbol": coin,
+            "score": round(calculate_momentum(coin),2)
+        })
+
+    return render_template(
+        "dashboard.html",
+        equity=round(account["equity"],2),
+        balance=round(account["balance"],2),
+        trades=account["trades"],
+        wins=account["wins"],
+        losses=account["losses"],
+        win_rate=win_rate,
+        drawdown=account["drawdown"],
+        aggression=round(account["aggression"]*100,1),
+        positions=pos_list,
+        rotation=rotation_list,
+        signals=signals[:10]
     )
 
-    open_pos_html = ""
-    for s, p in positions.items():
-        open_pos_html += f"<div>{s} @ {round(p['entry'],4)}</div>"
 
-    recent_html = ""
-    for sig in signals[-10:]:
-        recent_html += f"<div>{sig}</div>"
+# ==========================
+# START BACKGROUND THREAD
+# ==========================
 
-    return f"""
-    <html>
-    <head>
-    <meta http-equiv="refresh" content="5">
-    <style>
-    body {{
-        background: linear-gradient(135deg,#0f2027,#203a43,#2c5364);
-        color:white;
-        font-family:Arial;
-        padding:20px;
-    }}
-    .card {{
-        background:rgba(255,255,255,0.05);
-        padding:20px;
-        border-radius:15px;
-        margin-bottom:20px;
-    }}
-    h1 {{color:orange;}}
-    </style>
-    </head>
-    <body>
-    <h1>🔥 ELITE AI TRADER (LIVE)</h1>
-
-    <div class="card">
-        <h2>Account</h2>
-        Equity: ${round(account["equity"],2)}<br>
-        Balance: ${round(account["balance"],2)}<br>
-        Trades: {account["trades"]}<br>
-        Wins: {account["wins"]}<br>
-        Losses: {account["losses"]}<br>
-        Win Rate: {round(winrate,1)}%<br>
-        Drawdown: {round(account["drawdown"],1)}%<br>
-        Aggression: {round(account["aggression"]*100,1)}%
-    </div>
-
-    <div class="card">
-        <h2>Open Positions</h2>
-        {open_pos_html or "None"}
-    </div>
-
-    <div class="card">
-        <h2>Recent Signals</h2>
-        {recent_html}
-    </div>
-
-    </body>
-    </html>
-    """
-
-# ---------------------------
-# Start Background Loop
-# ---------------------------
-
-def start_loop():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(stream_prices())
-
-import threading
-threading.Thread(target=start_loop, daemon=True).start()
+threading.Thread(target=trading_loop, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
