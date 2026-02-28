@@ -1,157 +1,179 @@
+import os
 import ccxt
 import pandas as pd
 import numpy as np
+import threading
 import time
-from datetime import datetime
+from flask import Flask, jsonify
 
-# ================= CONFIG =================
+app = Flask(__name__)
 
-API_KEY = "YOUR_API_KEY"
-SECRET = "YOUR_SECRET"
+# =============================
+# CONFIG
+# =============================
+API_KEY = os.getenv("API_KEY")
+SECRET = os.getenv("SECRET")
 
-exchange = ccxt.binanceus({
-    'apiKey': API_KEY,
-    'secret': SECRET,
-    'enableRateLimit': True
+SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"]
+TIMEFRAME = "1m"
+RISK_PER_TRADE = 0.25   # 25% of equity per trade (AGGRESSIVE)
+TAKE_PROFIT = 0.015     # 1.5%
+STOP_LOSS = 0.01        # 1%
+SLEEP_TIME = 5          # seconds
+
+# =============================
+# EXCHANGE SETUP
+# =============================
+
+public_exchange = ccxt.binanceus({
+    "enableRateLimit": True
 })
 
-TIMEFRAME = '1m'
-ROTATION_SIZE = 25
-MAX_POSITIONS = 5
+private_exchange = None
+if API_KEY and SECRET:
+    private_exchange = ccxt.binanceus({
+        "apiKey": API_KEY,
+        "secret": SECRET,
+        "enableRateLimit": True
+    })
 
-STOP_LOSS = -0.006
-TAKE_PROFIT = 0.009
-TRAIL_TRIGGER = 0.004
+# =============================
+# STATE
+# =============================
 
-BASE_RISK = 0.20  # 20% of balance per trade (VERY AGGRESSIVE)
-SLEEP_TIME = 2
-
-# ==========================================
-
+equity = 50.0
+cash = 50.0
 positions = {}
 wins = 0
 losses = 0
-trade_count = 0
+trades = 0
+signals = []
 
-def get_top_symbols():
-    markets = exchange.load_markets()
-    usdt_pairs = [s for s in markets if "/USDT" in s and markets[s]['active']]
-    tickers = exchange.fetch_tickers(usdt_pairs)
+lock = threading.Lock()
 
-    sorted_symbols = sorted(
-        usdt_pairs,
-        key=lambda s: tickers[s]['quoteVolume'] if s in tickers else 0,
-        reverse=True
-    )
+# =============================
+# INDICATORS
+# =============================
 
-    return sorted_symbols[:50]
-
-def rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-
-    rs = avg_gain / avg_loss
+def calculate_rsi(df, period=14):
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+    rs = gain / loss
     return 100 - (100 / (1 + rs))
 
+# =============================
+# DATA FETCH
+# =============================
+
 def get_data(symbol):
-    ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=50)
-    df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
-    df['ema20'] = df['c'].ewm(span=20).mean()
-    df['rsi'] = rsi(df['c'])
-    return df
+    try:
+        ohlcv = public_exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=50)
+        df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
+        df["rsi"] = calculate_rsi(df)
+        return df
+    except Exception as e:
+        print("Data error:", e)
+        return None
 
-def place_market_buy(symbol, size):
-    order = exchange.create_market_buy_order(symbol, size)
-    return order
+# =============================
+# TRADING LOGIC
+# =============================
 
-def place_market_sell(symbol, size):
-    order = exchange.create_market_sell_order(symbol, size)
-    return order
+def trade_symbol(symbol):
+    global cash, equity, wins, losses, trades
 
-def get_balance():
-    balance = exchange.fetch_balance()
-    return balance['USDT']['free']
+    df = get_data(symbol)
+    if df is None:
+        return
 
-def calculate_position_size(symbol):
-    balance = get_balance()
-    risk_amount = balance * BASE_RISK
-    ticker = exchange.fetch_ticker(symbol)
-    price = ticker['last']
-    size = risk_amount / price
-    return round(size, 5)
+    latest = df.iloc[-1]
+    price = latest["close"]
+    rsi = latest["rsi"]
 
-# ================= MAIN LOOP =================
+    with lock:
 
-symbols = get_top_symbols()
+        # ENTRY
+        if symbol not in positions and rsi < 30 and cash > 5:
+            position_size = equity * RISK_PER_TRADE
+            qty = position_size / price
 
-print("🔥 Ultra Aggressive Adaptive Trader Started")
+            positions[symbol] = {
+                "entry": price,
+                "qty": qty
+            }
 
-while True:
+            cash -= position_size
+            signals.append(f"BUY {symbol} @ {price}")
+            print("BUY", symbol)
 
-    for symbol in symbols[:ROTATION_SIZE]:
+        # EXIT
+        elif symbol in positions:
+            entry = positions[symbol]["entry"]
+            qty = positions[symbol]["qty"]
 
-        try:
-            df = get_data(symbol)
-            last = df.iloc[-1]
-            prev = df.iloc[-2]
+            change = (price - entry) / entry
 
-            momentum = (last['c'] - prev['c']) / prev['c']
+            if change >= TAKE_PROFIT or change <= -STOP_LOSS:
+                pnl = qty * price
+                result = pnl - (qty * entry)
 
-            # ENTRY
-            if (symbol not in positions and
-                len(positions) < MAX_POSITIONS and
-                last['rsi'] > 35 and
-                last['c'] > last['ema20'] and
-                momentum > 0.002):
+                cash += pnl
+                equity = cash
 
-                size = calculate_position_size(symbol)
-                order = place_market_buy(symbol, size)
-
-                positions[symbol] = {
-                    'entry': last['c'],
-                    'size': size,
-                    'trail_active': False
-                }
-
-                print(f"{datetime.now()} BUY {symbol} @ {last['c']}")
-                trade_count += 1
-
-            # MANAGEMENT
-            if symbol in positions:
-                entry = positions[symbol]['entry']
-                current = last['c']
-                change = (current - entry) / entry
-
-                # activate trailing
-                if change > TRAIL_TRIGGER:
-                    positions[symbol]['trail_active'] = True
-
-                # trailing stop
-                if positions[symbol]['trail_active']:
-                    STOP = -0.003
+                trades += 1
+                if result > 0:
+                    wins += 1
                 else:
-                    STOP = STOP_LOSS
+                    losses += 1
 
-                # exit conditions
-                if change <= STOP or change >= TAKE_PROFIT:
-                    size = positions[symbol]['size']
-                    place_market_sell(symbol, size)
+                del positions[symbol]
+                signals.append(f"SELL {symbol} @ {price}")
+                print("SELL", symbol)
 
-                    if change > 0:
-                        wins += 1
-                        print(f"{datetime.now()} WIN {symbol} {change*100:.2f}%")
-                    else:
-                        losses += 1
-                        print(f"{datetime.now()} LOSS {symbol} {change*100:.2f}%")
+# =============================
+# MAIN LOOP
+# =============================
 
-                    del positions[symbol]
+def aggressive_loop():
+    global equity
+
+    while True:
+        try:
+            for symbol in SYMBOLS:
+                trade_symbol(symbol)
+
+            equity = cash
+            time.sleep(SLEEP_TIME)
 
         except Exception as e:
-            continue
+            print("Loop error:", e)
+            time.sleep(3)
 
-    print(f"Trades: {trade_count} | Wins: {wins} | Losses: {losses}")
-    time.sleep(SLEEP_TIME)
+# =============================
+# WEB ROUTES
+# =============================
+
+@app.route("/")
+def dashboard():
+    winrate = (wins / trades * 100) if trades > 0 else 0
+
+    return jsonify({
+        "Equity": round(equity,2),
+        "Cash": round(cash,2),
+        "Trades": trades,
+        "Wins": wins,
+        "Losses": losses,
+        "Win Rate %": round(winrate,2),
+        "Open Positions": positions,
+        "Recent Signals": signals[-5:]
+    })
+
+# =============================
+# START BOT
+# =============================
+
+threading.Thread(target=aggressive_loop, daemon=True).start()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
