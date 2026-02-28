@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import time
 import threading
-from flask import Flask, jsonify
+from flask import Flask, render_template_string
 
 # =========================
 # CONFIG
@@ -42,18 +42,13 @@ exchange = ccxt.binanceus({
     "enableRateLimit": True
 })
 
-# =========================
-# SYMBOL LIST
-# =========================
-
 SYMBOLS = [
     "BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
-    "DOGE/USDT","AVAX/USDT","LINK/USDT","ADA/USDT","MATIC/USDT",
-    "LTC/USDT","DOT/USDT","SHIB/USDT","ATOM/USDT","ARB/USDT"
+    "DOGE/USDT","AVAX/USDT","LINK/USDT","ADA/USDT","MATIC/USDT"
 ]
 
 # =========================
-# DATA FUNCTIONS
+# DATA
 # =========================
 
 def get_ohlcv(symbol):
@@ -74,23 +69,8 @@ def get_ohlcv(symbol):
 
     return df.dropna()
 
-def rank_by_volatility():
-    scored = []
-    for s in SYMBOLS:
-        try:
-            df = get_ohlcv(s)
-            atr = df["atr"].iloc[-1]
-            price = df["close"].iloc[-1]
-            score = atr / price
-            scored.append((s, score))
-        except:
-            continue
-
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return [x[0] for x in scored[:10]]
-
 # =========================
-# TRADING ENGINE
+# STRATEGY
 # =========================
 
 def evaluate_entry(symbol):
@@ -108,20 +88,13 @@ def evaluate_entry(symbol):
     if last["volume"] > last["vol_ma"] * 1.2:
         strength += 1.5
 
-    recent_high = df["high"].rolling(12).max().iloc[-2]
-    if last["close"] > recent_high:
-        strength += 2
-
-    volatility = last["atr"] / last["close"]
-    strength += volatility * 20
-
-    if strength < 3.5:
+    if strength < 3:
         return None
 
     return last
 
 def open_position(symbol, data):
-    global balance, aggression, trades
+    global balance, aggression
 
     if len(positions) >= MAX_POSITIONS:
         return
@@ -140,7 +113,7 @@ def open_position(symbol, data):
         "time": time.time()
     }
 
-    recent_signals.append(f"BUY {symbol} @ {round(entry,4)}")
+    recent_signals.append(f"🟢 BUY {symbol} @ {round(entry,4)}")
 
 def manage_positions():
     global balance, wins, losses, trades, aggression
@@ -148,7 +121,6 @@ def manage_positions():
     for symbol in list(positions.keys()):
         df = get_ohlcv(symbol)
         price = df["close"].iloc[-1]
-
         pos = positions[symbol]
 
         if time.time() - pos["time"] < MIN_HOLD_SECONDS:
@@ -168,25 +140,22 @@ def manage_positions():
 
         if pnl > 0:
             wins += 1
-            aggression *= 1.25
+            aggression *= 1.2
         else:
             losses += 1
-            aggression *= 0.65
+            aggression *= 0.7
 
-        aggression = max(0.6, min(aggression, 3.0))
+        aggression = max(0.6, min(aggression, 3))
 
-        recent_signals.append(
-            f"SELL {symbol} @ {round(price,4)} | PnL: {round(pnl,2)}"
-        )
+        emoji = "🟢" if pnl > 0 else "🔴"
+        recent_signals.append(f"{emoji} SELL {symbol} | PnL: {round(pnl,2)}")
 
         del positions[symbol]
 
 def trading_loop():
     while True:
         try:
-            volatile = rank_by_volatility()
-
-            for symbol in volatile:
+            for symbol in SYMBOLS:
                 if symbol not in positions:
                     data = evaluate_entry(symbol)
                     if data is not None:
@@ -200,31 +169,94 @@ def trading_loop():
         time.sleep(SCAN_DELAY)
 
 # =========================
-# FLASK APP
+# FLASK UI
 # =========================
 
 app = Flask(__name__)
 
 @app.route("/")
-def home():
-    equity = balance
+def dashboard():
     win_rate = (wins / trades * 100) if trades > 0 else 0
 
-    return jsonify({
-        "Mode": "NUCLEAR AI v3",
-        "Equity": round(equity,2),
-        "Cash": round(balance,2),
-        "Trades": trades,
-        "Wins": wins,
-        "Losses": losses,
-        "Win Rate %": round(win_rate,2),
-        "Aggression": round(aggression,2),
-        "Open Positions": positions,
-        "Recent Signals": recent_signals[-10:]
-    })
+    return render_template_string("""
+    <html>
+    <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            background: linear-gradient(135deg,#0f172a,#020617);
+            color: white;
+            font-family: Arial;
+            padding: 20px;
+        }
+        .card {
+            background: #1e293b;
+            padding: 18px;
+            border-radius: 14px;
+            margin-bottom: 15px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.4);
+        }
+        .big {
+            font-size: 22px;
+            font-weight: bold;
+        }
+        .green { color:#22c55e; }
+        .red { color:#ef4444; }
+        .yellow { color:#facc15; }
+        .positions div {
+            margin-bottom:6px;
+        }
+        .signals {
+            max-height:200px;
+            overflow-y:auto;
+            font-size:14px;
+        }
+    </style>
+    </head>
+    <body>
 
-# =========================
-# START BOT THREAD
+    <h2>🔥 NUCLEAR AI Trader</h2>
+
+    <div class="card">
+        <div class="big">Equity: ${{ equity }}</div>
+        <div>Trades: {{ trades }}</div>
+        <div class="green">Wins: {{ wins }}</div>
+        <div class="red">Losses: {{ losses }}</div>
+        <div class="yellow">Win Rate: {{ win_rate }}%</div>
+        <div>Aggression: {{ aggression }}</div>
+    </div>
+
+    <div class="card positions">
+        <div class="big">Open Positions</div>
+        {% if positions %}
+            {% for sym, p in positions.items() %}
+                <div>{{ sym }} @ {{ p['entry'] }}</div>
+            {% endfor %}
+        {% else %}
+            <div>None</div>
+        {% endif %}
+    </div>
+
+    <div class="card signals">
+        <div class="big">Recent Signals</div>
+        {% for s in signals %}
+            <div>{{ s }}</div>
+        {% endfor %}
+    </div>
+
+    </body>
+    </html>
+    """,
+    equity=round(balance,2),
+    trades=trades,
+    wins=wins,
+    losses=losses,
+    win_rate=round(win_rate,2),
+    aggression=round(aggression,2),
+    positions=positions,
+    signals=recent_signals[-12:]
+    )
+
 # =========================
 
 thread = threading.Thread(target=trading_loop)
