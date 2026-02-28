@@ -2,272 +2,183 @@ import ccxt
 import pandas as pd
 import numpy as np
 import time
-import threading
-from flask import Flask, render_template_string
+import random
+from collections import deque
 
-# =========================
+# ================================
 # CONFIG
-# =========================
+# ================================
 
-START_BALANCE = 50
-TIMEFRAME = "1m"
-HIGHER_TIMEFRAME = "5m"
+TIMEFRAME = '3m'
+START_BALANCE = 1000
+MAX_COINS = 12
+RISK_PER_TRADE = 0.10        # 10% per trade (aggressive)
+AI_ADJUST_EVERY = 20         # learn every 20 trades
+SLEEP_SECONDS = 20
 
-BASE_RISK = 0.25
-MAX_RISK = 0.45
+# ================================
+# EXCHANGE (PUBLIC DATA ONLY)
+# ================================
 
-MAX_POSITIONS = 6
-SCAN_DELAY = 5
-COOLDOWN_AFTER_LOSS = 30
+exchange = ccxt.binanceus()
 
-ENTRY_SCORE_THRESHOLD = 3
+# ================================
+# AI PARAMETERS (SELF TUNING)
+# ================================
 
-# =========================
-# STATE
-# =========================
+class Brain:
+    def __init__(self):
+        self.score_threshold = 3
+        self.rsi_low = 35
+        self.tp_mult = 1.5
+        self.sl_mult = 1.0
+        self.trade_history = deque(maxlen=AI_ADJUST_EVERY)
 
-balance = START_BALANCE
-wins = 0
-losses = 0
-trades = 0
-aggression = 1.2
-cooldown_until = 0
+    def learn(self):
+        if len(self.trade_history) < AI_ADJUST_EVERY:
+            return
+        
+        wins = sum(1 for t in self.trade_history if t > 0)
+        win_rate = wins / len(self.trade_history)
 
-positions = {}
-recent_signals = []
+        print("\n🧠 AI LEARNING PHASE")
+        print("Win Rate:", round(win_rate * 100, 2), "%")
 
-# =========================
-# EXCHANGE
-# =========================
+        if win_rate < 0.45:
+            self.score_threshold += 0.5
+            self.rsi_low -= 2
+            self.tp_mult += 0.1
+            print("AI: Tightening entries")
 
-exchange = ccxt.binanceus({
-    "enableRateLimit": True
-})
+        elif win_rate > 0.60:
+            self.score_threshold -= 0.5
+            self.rsi_low += 2
+            self.tp_mult -= 0.1
+            print("AI: Increasing aggression")
+
+        self.trade_history.clear()
+
+brain = Brain()
+
+# ================================
+# HELPERS
+# ================================
 
 def get_top_symbols():
     markets = exchange.load_markets()
-    usdt_pairs = [
-        s for s in markets
-        if "/USDT" in s and markets[s]["active"]
+    pairs = [
+        s for s in markets 
+        if '/USDT' in s and markets[s]['active']
     ]
-    return usdt_pairs[:50]
+    return pairs[:MAX_COINS]
 
-SYMBOLS = get_top_symbols()
+def fetch_data(symbol):
+    ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=120)
+    df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','volume'])
+    return df
 
-# =========================
-# DATA
-# =========================
+def rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-def fetch_df(symbol, tf):
-    data = exchange.fetch_ohlcv(symbol, tf, limit=100)
-    df = pd.DataFrame(data, columns=["ts","open","high","low","close","volume"])
-
-    df["ema9"] = df["close"].ewm(span=9).mean()
-    df["ema21"] = df["close"].ewm(span=21).mean()
-    df["ema50"] = df["close"].ewm(span=50).mean()
-
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = -delta.clip(upper=0).rolling(14).mean()
-    rs = gain / loss
-    df["rsi"] = 100 - (100 / (1 + rs))
-
-    df["atr"] = (df["high"] - df["low"]).rolling(14).mean()
-    df["vol_ma"] = df["volume"].rolling(20).mean()
-
-    return df.dropna()
-
-# =========================
-# SCORING
-# =========================
-
-def score_symbol(symbol):
-    df1 = fetch_df(symbol, TIMEFRAME)
-    df5 = fetch_df(symbol, HIGHER_TIMEFRAME)
-
-    last1 = df1.iloc[-1]
-    last5 = df5.iloc[-1]
+def score_signal(df):
+    df['rsi'] = rsi(df['close'])
+    df['ema9'] = df['close'].ewm(span=9).mean()
+    df['ema21'] = df['close'].ewm(span=21).mean()
 
     score = 0
 
-    if last1["ema9"] > last1["ema21"]:
+    if df['ema9'].iloc[-1] > df['ema21'].iloc[-1]:
         score += 1
 
-    if last1["ema21"] > last1["ema50"]:
+    if df['rsi'].iloc[-1] < brain.rsi_low:
         score += 1
 
-    if last5["ema9"] > last5["ema21"]:
+    if df['volume'].iloc[-1] > df['volume'].rolling(20).mean().iloc[-1]:
         score += 1
 
-    if last1["rsi"] > 52:
+    momentum = df['close'].pct_change().iloc[-1]
+    if momentum > 0:
         score += 1
 
-    if last1["volume"] > last1["vol_ma"]:
-        score += 1
+    return score, df['close'].iloc[-1]
 
-    if last1["atr"] / last1["close"] > 0.0015:
-        score += 1
+# ================================
+# SIMULATION ENGINE
+# ================================
 
-    return score, last1
+balance = START_BALANCE
+open_positions = []
 
-# =========================
-# TRADES
-# =========================
-
-def open_trade(symbol, data):
+def open_trade(symbol, price):
     global balance
+    size = balance * RISK_PER_TRADE
+    tp = price * (1 + 0.01 * brain.tp_mult)
+    sl = price * (1 - 0.01 * brain.sl_mult)
 
-    risk = min(BASE_RISK * aggression, MAX_RISK)
-    size = balance * risk
-
-    entry = data["close"]
-    atr = data["atr"]
-
-    tp = entry + atr * 1.8
-    sl = entry - atr * 1.1
-
-    positions[symbol] = {
-        "entry": entry,
+    trade = {
+        "symbol": symbol,
+        "entry": price,
         "size": size,
         "tp": tp,
-        "sl": sl,
-        "time": time.time()
+        "sl": sl
     }
 
-    recent_signals.append(f"🟢 BUY {symbol} @ {round(entry,4)}")
+    open_positions.append(trade)
+    print(f"🚀 OPEN {symbol} @ {price:.4f}")
 
-def manage_trades():
-    global balance, wins, losses, trades, aggression, cooldown_until
+def check_positions():
+    global balance
+    for trade in open_positions[:]:
+        price = exchange.fetch_ticker(trade["symbol"])['last']
 
-    for symbol in list(positions.keys()):
-        df = fetch_df(symbol, TIMEFRAME)
-        price = df["close"].iloc[-1]
-        pos = positions[symbol]
+        if price >= trade["tp"]:
+            profit = trade["size"] * 0.01 * brain.tp_mult
+            balance += profit
+            brain.trade_history.append(1)
+            print(f"✅ TP HIT {trade['symbol']} +${profit:.2f}")
+            open_positions.remove(trade)
 
-        pnl = 0
+        elif price <= trade["sl"]:
+            loss = trade["size"] * 0.01 * brain.sl_mult
+            balance -= loss
+            brain.trade_history.append(-1)
+            print(f"❌ SL HIT {trade['symbol']} -${loss:.2f}")
+            open_positions.remove(trade)
 
-        if price >= pos["tp"]:
-            pnl = pos["size"] * 0.025
-        elif price <= pos["sl"]:
-            pnl = -pos["size"] * 0.02
-        else:
-            continue
+# ================================
+# MAIN LOOP
+# ================================
 
-        balance += pnl
-        trades += 1
+symbols = get_top_symbols()
 
-        if pnl > 0:
-            wins += 1
-            aggression *= 1.2
-        else:
-            losses += 1
-            aggression *= 0.8
-            cooldown_until = time.time() + COOLDOWN_AFTER_LOSS
+print("\n🔥 AGGRESSIVE AI SIM MODE ACTIVE")
+print("Starting Balance:", balance)
+print("Monitoring:", symbols)
+print("Timeframe:", TIMEFRAME)
 
-        aggression = max(0.8, min(aggression, 4))
+while True:
+    try:
+        for symbol in symbols:
+            df = fetch_data(symbol)
+            score, price = score_signal(df)
 
-        emoji = "🟢" if pnl > 0 else "🔴"
-        recent_signals.append(f"{emoji} SELL {symbol} | {round(pnl,2)}")
+            if score >= brain.score_threshold and len(open_positions) < 5:
+                open_trade(symbol, price)
 
-        del positions[symbol]
+        check_positions()
+        brain.learn()
 
-# =========================
-# LOOP
-# =========================
+        print("Balance:", round(balance, 2),
+              "| Open:", len(open_positions))
 
-def trading_loop():
-    global cooldown_until
+        time.sleep(SLEEP_SECONDS)
 
-    while True:
-        try:
-            if time.time() > cooldown_until:
-
-                ranked = []
-
-                for symbol in SYMBOLS:
-                    if symbol not in positions:
-                        score, data = score_symbol(symbol)
-                        if score >= ENTRY_SCORE_THRESHOLD:
-                            ranked.append((score, symbol, data))
-
-                ranked.sort(reverse=True)
-
-                for r in ranked[:3]:
-                    if len(positions) < MAX_POSITIONS:
-                        open_trade(r[1], r[2])
-
-            manage_trades()
-
-        except Exception as e:
-            print("Error:", e)
-
-        time.sleep(SCAN_DELAY)
-
-# =========================
-# UI
-# =========================
-
-app = Flask(__name__)
-
-@app.route("/")
-def dashboard():
-    win_rate = (wins / trades * 100) if trades else 0
-
-    return render_template_string("""
-    <html>
-    <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-    body { background:#111827; color:#e5e7eb; font-family:Arial; padding:20px; }
-    .card { background:#1f2937; padding:18px; border-radius:12px; margin-bottom:15px; }
-    .big { font-size:22px; font-weight:bold; }
-    .green{color:#22c55e;}
-    .red{color:#ef4444;}
-    .yellow{color:#facc15;}
-    </style>
-    </head>
-    <body>
-    <h2>🚀 Aggressive Adaptive AI Trader</h2>
-
-    <div class="card">
-    <div class="big">Equity: ${{equity}}</div>
-    <div>Trades: {{trades}}</div>
-    <div class="green">Wins: {{wins}}</div>
-    <div class="red">Losses: {{losses}}</div>
-    <div class="yellow">Win Rate: {{win_rate}}%</div>
-    <div>Aggression Multiplier: {{aggression}}</div>
-    </div>
-
-    <div class="card">
-    <div class="big">Open Positions</div>
-    {% for sym,p in positions.items() %}
-        <div>{{sym}} @ {{p["entry"]}}</div>
-    {% endfor %}
-    </div>
-
-    <div class="card">
-    <div class="big">Recent Signals</div>
-    {% for s in signals %}
-        <div>{{s}}</div>
-    {% endfor %}
-    </div>
-
-    </body>
-    </html>
-    """,
-    equity=round(balance,2),
-    trades=trades,
-    wins=wins,
-    losses=losses,
-    win_rate=round(win_rate,2),
-    aggression=round(aggression,2),
-    positions=positions,
-    signals=recent_signals[-12:]
-    )
-
-thread = threading.Thread(target=trading_loop)
-thread.daemon = True
-thread.start()
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    except Exception as e:
+        print("Error:", e)
+        time.sleep(5)
