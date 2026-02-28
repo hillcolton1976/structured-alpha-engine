@@ -24,6 +24,8 @@ account = {
 }
 
 AGGRESSION = 0.2
+TAKE_PROFIT = 0.02
+STOP_LOSS = 0.01
 
 
 def get_prices():
@@ -56,11 +58,49 @@ def calculate_scores():
 def trader():
     while True:
         prices = get_prices()
-        if prices:
-            for symbol, price in prices.items():
-                price_history[symbol].append(price)
-                if len(price_history[symbol]) > 50:
-                    price_history[symbol].pop(0)
+        if not prices:
+            time.sleep(5)
+            continue
+
+        for symbol, price in prices.items():
+            price_history[symbol].append(price)
+            if len(price_history[symbol]) > 50:
+                price_history[symbol].pop(0)
+
+        scores = calculate_scores()
+        best = max(scores, key=scores.get)
+
+        # ENTER TRADE
+        if account["position"] is None and scores[best] > 0:
+            entry_price = prices[best]
+            size = account["balance"] * AGGRESSION
+            account["position"] = {
+                "symbol": best,
+                "entry": entry_price,
+                "size": size
+            }
+
+        # EXIT TRADE
+        if account["position"]:
+            symbol = account["position"]["symbol"]
+            entry = account["position"]["entry"]
+            size = account["position"]["size"]
+            current = prices.get(symbol, entry)
+
+            change = (current - entry) / entry
+
+            if change >= TAKE_PROFIT or change <= -STOP_LOSS:
+                pnl = size * change
+                account["balance"] += pnl
+                account["trades"] += 1
+
+                if pnl > 0:
+                    account["wins"] += 1
+                else:
+                    account["losses"] += 1
+
+                account["position"] = None
+
         time.sleep(5)
 
 
@@ -102,6 +142,17 @@ def dashboard():
         </div>
 
         <div class="card">
+            <h2>Open Position</h2>
+            {% if position %}
+                Symbol: {{ position.symbol }}<br>
+                Entry: {{ position.entry }}<br>
+                Size: ${{ position.size }}
+            {% else %}
+                None
+            {% endif %}
+        </div>
+
+        <div class="card">
             <h2>Top 20 Momentum</h2>
             <table>
                 <tr>
@@ -127,7 +178,8 @@ def dashboard():
         wins=account["wins"],
         losses=account["losses"],
         winrate=winrate,
-        scores=sorted_scores
+        scores=sorted_scores,
+        position=account["position"]
     )
 
 
