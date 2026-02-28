@@ -14,6 +14,7 @@ TOP_20 = [
 ]
 
 price_history = {symbol: [] for symbol in TOP_20}
+live_prices = {}
 
 account = {
     "balance": 50.0,
@@ -30,12 +31,15 @@ STOP_LOSS = 0.01
 
 def get_prices():
     try:
-        url = "https://api.binance.us/api/v3/ticker/price"
+        url = "https://api.binance.us/api/v3/ticker/24hr"
         data = requests.get(url, timeout=10).json()
         prices = {}
         for item in data:
             if item["symbol"] in TOP_20:
-                prices[item["symbol"]] = float(item["price"])
+                prices[item["symbol"]] = {
+                    "price": float(item["lastPrice"]),
+                    "change": float(item["priceChangePercent"])
+                }
         return prices
     except:
         return {}
@@ -56,13 +60,17 @@ def calculate_scores():
 
 
 def trader():
+    global live_prices
     while True:
         prices = get_prices()
         if not prices:
             time.sleep(5)
             continue
 
-        for symbol, price in prices.items():
+        live_prices = prices
+
+        for symbol in TOP_20:
+            price = prices[symbol]["price"]
             price_history[symbol].append(price)
             if len(price_history[symbol]) > 50:
                 price_history[symbol].pop(0)
@@ -70,9 +78,9 @@ def trader():
         scores = calculate_scores()
         best = max(scores, key=scores.get)
 
-        # ENTER TRADE
+        # ENTER
         if account["position"] is None and scores[best] > 0:
-            entry_price = prices[best]
+            entry_price = prices[best]["price"]
             size = account["balance"] * AGGRESSION
             account["position"] = {
                 "symbol": best,
@@ -80,12 +88,12 @@ def trader():
                 "size": size
             }
 
-        # EXIT TRADE
+        # EXIT
         if account["position"]:
             symbol = account["position"]["symbol"]
             entry = account["position"]["entry"]
             size = account["position"]["size"]
-            current = prices.get(symbol, entry)
+            current = prices[symbol]["price"]
 
             change = (current - entry) / entry
 
@@ -127,6 +135,8 @@ def dashboard():
         table { width: 100%; border-collapse: collapse; }
         th, td { padding: 6px; text-align: left; }
         th { color: #00c6ff; border-bottom: 1px solid #555; }
+        .green { color: #00ff99; }
+        .red { color: #ff4d4d; }
     </style>
     </head>
     <body>
@@ -142,31 +152,27 @@ def dashboard():
         </div>
 
         <div class="card">
-            <h2>Open Position</h2>
-            {% if position %}
-                Symbol: {{ position.symbol }}<br>
-                Entry: {{ position.entry }}<br>
-                Size: ${{ position.size }}
-            {% else %}
-                None
-            {% endif %}
-        </div>
-
-        <div class="card">
-            <h2>Top 20 Momentum</h2>
+            <h2>Top 20 Live Market</h2>
             <table>
                 <tr>
                     <th>Symbol</th>
+                    <th>Price</th>
+                    <th>24h %</th>
                     <th>Score</th>
                 </tr>
                 {% for symbol, score in scores %}
                 <tr>
                     <td>{{ symbol }}</td>
+                    <td>${{ prices[symbol]['price'] if symbol in prices else '-' }}</td>
+                    <td class="{{ 'green' if prices[symbol]['change']|float > 0 else 'red' }}">
+                        {{ prices[symbol]['change'] if symbol in prices else '-' }}%
+                    </td>
                     <td>{{ score }}</td>
                 </tr>
                 {% endfor %}
             </table>
         </div>
+
     </body>
     </html>
     """
@@ -179,7 +185,7 @@ def dashboard():
         losses=account["losses"],
         winrate=winrate,
         scores=sorted_scores,
-        position=account["position"]
+        prices=live_prices
     )
 
 
