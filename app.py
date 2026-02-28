@@ -1,84 +1,89 @@
 import ccxt
 import pandas as pd
-import numpy as np
 import time
 import threading
-from flask import Flask, jsonify, render_template_string
-
-# ================================
-# CONFIG
-# ================================
-
-TIMEFRAME = '3m'
-START_BALANCE = 1000
-MAX_COINS = 10
-BASE_RISK = 0.10
-SLEEP_SECONDS = 15
+from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
-# ================================
-# GLOBAL STATE
-# ================================
+# =========================
+# CONFIG
+# =========================
+
+TIMEFRAME = "3m"
+START_BALANCE = 50.0
 
 state = {
     "balance": START_BALANCE,
+    "trades": 0,
     "wins": 0,
     "losses": 0,
-    "trades": 0,
+    "aggression": 0.15,  # 15% per trade (aggressive)
     "positions": {},
-    "signals": [],
-    "aggression": BASE_RISK
+    "signals": []
 }
 
-# ================================
+# =========================
 # TRADER ENGINE
-# ================================
+# =========================
 
 class Trader:
     def __init__(self):
         self.exchange = ccxt.binanceus()
-        self.symbols = []
+        self.symbols = self.get_symbols()
 
     def get_symbols(self):
         markets = self.exchange.load_markets()
         pairs = [
             s for s in markets
-            if '/USDT' in s and markets[s]['active']
+            if "/USDT" in s and markets[s]["active"]
         ]
-        return pairs[:MAX_COINS]
+        return pairs[:20]  # scan top 20 for speed
 
     def fetch_data(self, symbol):
-        ohlcv = self.exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=100)
+        ohlcv = self.exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=120)
         df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
         return df
 
     def score(self, df):
-        df['ema9'] = df['c'].ewm(span=9).mean()
-        df['ema21'] = df['c'].ewm(span=21).mean()
+        df["ema9"] = df["c"].ewm(span=9).mean()
+        df["ema21"] = df["c"].ewm(span=21).mean()
+
+        delta = df["c"].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+        rs = avg_gain / avg_loss
+        df["rsi"] = 100 - (100 / (1 + rs))
+
         score = 0
 
-        if df['ema9'].iloc[-1] > df['ema21'].iloc[-1]:
+        if df["ema9"].iloc[-1] > df["ema21"].iloc[-1]:
             score += 1
 
-        if df['v'].iloc[-1] > df['v'].rolling(20).mean().iloc[-1]:
+        if df["rsi"].iloc[-1] > 55:
             score += 1
 
-        return score, df['c'].iloc[-1]
+        if df["v"].iloc[-1] > df["v"].rolling(20).mean().iloc[-1]:
+            score += 1
+
+        return score, df["c"].iloc[-1]
 
     def adjust_aggression(self):
         total = state["wins"] + state["losses"]
-        if total > 5:
+        if total >= 5:
             winrate = state["wins"] / total
-            if winrate < 0.4:
-                state["aggression"] *= 0.9
-            elif winrate > 0.6:
-                state["aggression"] *= 1.1
 
-            state["aggression"] = max(0.05, min(0.25, state["aggression"]))
+            if winrate < 0.45:
+                state["aggression"] *= 0.85
+            elif winrate > 0.55:
+                state["aggression"] *= 1.15
+
+            state["aggression"] = max(0.08, min(0.30, state["aggression"]))
 
     def run(self):
-        self.symbols = self.get_symbols()
+        print("🔥 Aggressive AI Trader Running...")
         print("Monitoring:", self.symbols)
 
         while True:
@@ -87,20 +92,28 @@ class Trader:
                     df = self.fetch_data(symbol)
                     score, price = self.score(df)
 
+                    # ENTRY
                     if score >= 2 and symbol not in state["positions"]:
                         size = state["balance"] * state["aggression"]
-                        state["positions"][symbol] = {
-                            "entry": price,
-                            "size": size
-                        }
-                        state["signals"].append(f"🚀 BUY {symbol} @ {round(price,2)}")
 
+                        if size > 1:
+                            state["positions"][symbol] = {
+                                "entry": price,
+                                "size": size
+                            }
+
+                            state["signals"].append(
+                                f"🚀 BUY {symbol} @ {round(price,4)}"
+                            )
+
+                    # EXIT
                     if symbol in state["positions"]:
                         entry = state["positions"][symbol]["entry"]
                         pnl = (price - entry) / entry
 
                         if pnl > 0.01 or pnl < -0.01:
                             state["trades"] += 1
+
                             if pnl > 0:
                                 state["wins"] += 1
                                 state["balance"] *= 1.01
@@ -109,87 +122,98 @@ class Trader:
                                 state["balance"] *= 0.99
 
                             state["signals"].append(
-                                f"💥 SELL {symbol} | PnL {round(pnl*100,2)}%"
+                                f"💥 SELL {symbol} | {round(pnl*100,2)}%"
                             )
+
                             del state["positions"][symbol]
                             self.adjust_aggression()
 
-                time.sleep(SLEEP_SECONDS)
+                time.sleep(8)
 
             except Exception as e:
                 print("Error:", e)
                 time.sleep(5)
 
-# ================================
-# ROUTES
-# ================================
+# =========================
+# WEB UI
+# =========================
 
 @app.route("/")
 def dashboard():
+    total = state["wins"] + state["losses"]
+    winrate = round((state["wins"]/total)*100,2) if total > 0 else 0
+
     return render_template_string("""
     <html>
     <head>
-        <title>Adaptive AI Trader</title>
+        <title>🔥 Aggressive AI Trader</title>
         <style>
             body {
-                background: linear-gradient(135deg,#0f172a,#1e293b);
-                color: white;
+                background: linear-gradient(135deg,#0f2027,#203a43,#2c5364);
                 font-family: Arial;
+                color: white;
                 padding: 20px;
             }
             .card {
-                background: #1e293b;
+                background: rgba(255,255,255,0.08);
                 padding: 20px;
                 border-radius: 12px;
                 margin-bottom: 20px;
             }
-            h1 { color: #f97316; }
-            .green { color: #22c55e; }
-            .red { color: #ef4444; }
+            h1 { color: orange; }
         </style>
-        <script>
-            async function refresh() {
-                const res = await fetch('/data');
-                const data = await res.json();
-                document.getElementById("balance").innerText = "$" + data.balance.toFixed(2);
-                document.getElementById("wins").innerText = data.wins;
-                document.getElementById("losses").innerText = data.losses;
-                document.getElementById("trades").innerText = data.trades;
-                document.getElementById("agg").innerText = (data.aggression*100).toFixed(1)+"%";
-                document.getElementById("signals").innerText = data.signals.slice(-8).join("\\n");
-            }
-            setInterval(refresh, 3000);
-            window.onload = refresh;
-        </script>
     </head>
     <body>
-        <h1>🔥 Adaptive AI Trader</h1>
+        <h1>🔥 Aggressive AI Trader</h1>
 
         <div class="card">
-            <b>Balance:</b> <span id="balance"></span><br>
-            <b>Trades:</b> <span id="trades"></span><br>
-            <b>Wins:</b> <span id="wins" class="green"></span><br>
-            <b>Losses:</b> <span id="losses" class="red"></span><br>
-            <b>Aggression Level:</b> <span id="agg"></span>
+            <h2>Account</h2>
+            Balance: ${{balance}}<br>
+            Trades: {{trades}}<br>
+            Wins: {{wins}}<br>
+            Losses: {{losses}}<br>
+            Win Rate: {{winrate}}%<br>
+            Aggression: {{aggression}}%
         </div>
 
         <div class="card">
-            <b>Recent Signals</b><br><br>
-            <pre id="signals"></pre>
+            <h2>Open Positions</h2>
+            {% for s in positions %}
+                {{s}}<br>
+            {% else %}
+                None
+            {% endfor %}
         </div>
+
+        <div class="card">
+            <h2>Recent Signals</h2>
+            {% for sig in signals[-10:] %}
+                {{sig}}<br>
+            {% endfor %}
+        </div>
+
     </body>
     </html>
-    """)
+    """,
+    balance=round(state["balance"],2),
+    trades=state["trades"],
+    wins=state["wins"],
+    losses=state["losses"],
+    winrate=winrate,
+    aggression=round(state["aggression"]*100,1),
+    positions=state["positions"],
+    signals=state["signals"]
+    )
 
-@app.route("/data")
-def data():
-    return jsonify(state)
+# =========================
+# START THREAD
+# =========================
 
-# ================================
-# START TRADER THREAD
-# ================================
+def start_trader():
+    trader = Trader()
+    trader.run()
 
-threading.Thread(target=Trader().run, daemon=True).start()
+threading.Thread(target=start_trader, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
