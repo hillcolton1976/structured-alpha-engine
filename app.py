@@ -5,31 +5,52 @@ import time
 
 app = Flask(__name__)
 
-# ======================
-# CONFIG
-# ======================
-
 START_BALANCE = 50.0
 MAX_POSITIONS = 5
 REFRESH_SECONDS = 5
 
-SYMBOLS = [
-    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
-    "ADAUSDT","DOGEUSDT","AVAXUSDT","LINKUSDT","MATICUSDT",
-    "TRXUSDT","DOTUSDT","LTCUSDT","BCHUSDT","ATOMUSDT",
-    "NEARUSDT","UNIUSDT","APTUSDT","ARBUSDT","OPUSDT",
-    "INJUSDT","IMXUSDT","RNDRUSDT","FETUSDT","GALAUSDT",
-    "SUIUSDT","SEIUSDT","TIAUSDT","PYTHUSDT","ORDIUSDT",
-    "AAVEUSDT","ICPUSDT","FILUSDT","ETCUSDT","XLMUSDT"
-]
-
-# ======================
-# STATE
-# ======================
+# CoinGecko IDs mapped to symbols
+COINS = {
+    "bitcoin":"BTCUSDT",
+    "ethereum":"ETHUSDT",
+    "binancecoin":"BNBUSDT",
+    "solana":"SOLUSDT",
+    "ripple":"XRPUSDT",
+    "cardano":"ADAUSDT",
+    "dogecoin":"DOGEUSDT",
+    "avalanche-2":"AVAXUSDT",
+    "chainlink":"LINKUSDT",
+    "matic-network":"MATICUSDT",
+    "tron":"TRXUSDT",
+    "polkadot":"DOTUSDT",
+    "litecoin":"LTCUSDT",
+    "bitcoin-cash":"BCHUSDT",
+    "cosmos":"ATOMUSDT",
+    "near":"NEARUSDT",
+    "uniswap":"UNIUSDT",
+    "aptos":"APTUSDT",
+    "arbitrum":"ARBUSDT",
+    "optimism":"OPUSDT",
+    "injective-protocol":"INJUSDT",
+    "immutable-x":"IMXUSDT",
+    "render-token":"RNDRUSDT",
+    "fetch-ai":"FETUSDT",
+    "gala":"GALAUSDT",
+    "sui":"SUIUSDT",
+    "sei-network":"SEIUSDT",
+    "tia":"TIAUSDT",
+    "pyth-network":"PYTHUSDT",
+    "ordi":"ORDIUSDT",
+    "aave":"AAVEUSDT",
+    "internet-computer":"ICPUSDT",
+    "filecoin":"FILUSDT",
+    "ethereum-classic":"ETCUSDT",
+    "stellar":"XLMUSDT"
+}
 
 cash = START_BALANCE
-positions = {}  # symbol: {qty, entry}
-history = {s: [] for s in SYMBOLS}
+positions = {}
+history = {v: [] for v in COINS.values()}
 
 trades = 0
 wins = 0
@@ -40,58 +61,52 @@ tp_percent = 0.012
 sl_percent = 0.008
 
 # ======================
-# PRICE FETCH
+# PRICE FETCH (CoinGecko Batch)
 # ======================
 
-def get_price(symbol):
+def get_prices():
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(
-            "https://api.binance.com/api/v3/ticker/price",
-            params={"symbol": symbol},
-            headers=headers,
-            timeout=10
-        )
+        ids = ",".join(COINS.keys())
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd"
+        r = requests.get(url, timeout=10)
         data = r.json()
 
-        if "price" in data:
-            return float(data["price"])
-        else:
-            print("API Error:", data)
-            return None
+        prices = {}
+        for cg_id, symbol in COINS.items():
+            if cg_id in data:
+                prices[symbol] = data[cg_id]["usd"]
+        return prices
+
     except Exception as e:
-        print("Request failed:", e)
-        return None
+        print("Price fetch error:", e)
+        return {}
 
 # ======================
 # SCORING
 # ======================
 
-def calculate_scores():
+def calculate_scores(prices):
     scores = {}
-    for s in SYMBOLS:
-        price = get_price(s)
-        if price is None:
-            continue
+    for symbol, price in prices.items():
 
-        history[s].append(price)
-        if len(history[s]) > 50:
-            history[s].pop(0)
+        history[symbol].append(price)
+        if len(history[symbol]) > 50:
+            history[symbol].pop(0)
 
-        if len(history[s]) >= 10:
-            base = history[s][-10]
+        if len(history[symbol]) >= 10:
+            base = history[symbol][-10]
             if base != 0:
-                change = (history[s][-1] - base) / base
-                scores[s] = round(change, 5)
+                change = (price - base) / base
+                scores[symbol] = round(change, 5)
             else:
-                scores[s] = 0
+                scores[symbol] = 0
         else:
-            scores[s] = 0
+            scores[symbol] = 0
 
     return scores
 
 # ======================
-# TRADER LOOP
+# TRADER
 # ======================
 
 def trader():
@@ -99,14 +114,15 @@ def trader():
     global entry_threshold, tp_percent, sl_percent
 
     while True:
-        scores = calculate_scores()
+        prices = get_prices()
+        scores = calculate_scores(prices)
 
-        # SELL LOGIC
+        # SELL
         for symbol in list(positions.keys()):
-            price = get_price(symbol)
-            if price is None:
+            if symbol not in prices:
                 continue
 
+            price = prices[symbol]
             entry = positions[symbol]["entry"]
             qty = positions[symbol]["qty"]
 
@@ -131,14 +147,10 @@ def trader():
                     winrate = wins / trades
                     if winrate < 0.4:
                         entry_threshold *= 1.05
-                        tp_percent *= 0.95
-                        sl_percent *= 1.05
                     elif winrate > 0.6:
                         entry_threshold *= 0.97
-                        tp_percent *= 1.05
-                        sl_percent *= 0.95
 
-        # BUY LOGIC
+        # BUY
         if len(positions) < MAX_POSITIONS:
             sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
@@ -147,18 +159,11 @@ def trader():
                     continue
 
                 if score > entry_threshold and cash > 5:
-                    price = get_price(symbol)
-                    if price is None:
-                        continue
-
+                    price = prices[symbol]
                     invest = cash / (MAX_POSITIONS - len(positions))
                     qty = invest / price
 
-                    positions[symbol] = {
-                        "qty": qty,
-                        "entry": price
-                    }
-
+                    positions[symbol] = {"qty": qty, "entry": price}
                     cash -= invest
                     break
 
@@ -172,32 +177,28 @@ threading.Thread(target=trader, daemon=True).start()
 
 @app.route("/")
 def dashboard():
-    scores = calculate_scores()
+    prices = get_prices()
+    scores = calculate_scores(prices)
 
-    rows = ""
-    for s in SYMBOLS:
-        price = get_price(s)
-        score = scores.get(s, 0)
-        if price is None:
-            price = 0
-        rows += f"<tr><td>{s}</td><td>${price:.6f}</td><td>{score:.5f}</td></tr>"
-
-    pos_rows = ""
     total_positions_value = 0
+    pos_rows = ""
 
     for s, data in positions.items():
-        price = get_price(s)
-        if price is None:
-            continue
+        if s in prices:
+            price = prices[s]
+            value = data["qty"] * price
+            pnl = value - (data["qty"] * data["entry"])
+            total_positions_value += value
 
-        value = data["qty"] * price
-        total_positions_value += value
-        pnl = value - (data["qty"] * data["entry"])
-
-        pos_rows += f"<tr><td>{s}</td><td>{data['qty']:.4f}</td><td>${data['entry']:.6f}</td><td>${price:.6f}</td><td>${pnl:.2f}</td></tr>"
+            pos_rows += f"<tr><td>{s}</td><td>{data['qty']:.4f}</td><td>${data['entry']:.4f}</td><td>${price:.4f}</td><td>${pnl:.2f}</td></tr>"
 
     total_equity = cash + total_positions_value
-    winrate = round((wins / trades) * 100, 2) if trades > 0 else 0
+    winrate = round((wins/trades)*100,2) if trades>0 else 0
+
+    rows = ""
+    for s, price in prices.items():
+        score = scores.get(s,0)
+        rows += f"<tr><td>{s}</td><td>${price:.6f}</td><td>{score:.5f}</td></tr>"
 
     return render_template_string(f"""
     <html>
@@ -205,48 +206,32 @@ def dashboard():
         <meta http-equiv="refresh" content="{REFRESH_SECONDS}">
         <style>
             body {{
-                background: linear-gradient(to bottom right, #0f2027, #203a43, #2c5364);
-                color: white;
-                font-family: Arial;
-                padding: 20px;
+                background: linear-gradient(to bottom right,#0f2027,#203a43,#2c5364);
+                color:white;
+                font-family:Arial;
+                padding:20px;
             }}
-            h1 {{ color: #ffae42; }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-bottom: 20px;
-            }}
-            th, td {{
-                padding: 8px;
-                text-align: left;
-            }}
-            th {{ color: #6dd5fa; }}
-            tr:nth-child(even) {{ background-color: rgba(255,255,255,0.05); }}
-            .card {{
-                background: rgba(255,255,255,0.05);
-                padding: 15px;
-                border-radius: 10px;
-                margin-bottom: 20px;
-            }}
+            table{{width:100%;border-collapse:collapse;margin-bottom:20px;}}
+            th,td{{padding:8px;text-align:left;}}
+            th{{color:#6dd5fa;}}
+            tr:nth-child(even){{background:rgba(255,255,255,0.05);}}
+            .card{{background:rgba(255,255,255,0.05);padding:15px;border-radius:10px;margin-bottom:20px;}}
         </style>
     </head>
     <body>
         <h1>🔥 ELITE TOP-35 ADAPTIVE AI</h1>
 
         <div class="card">
-            <b>Cash:</b> ${cash:.2f}<br>
-            <b>Positions Value:</b> ${total_positions_value:.2f}<br>
-            <b>Total Equity:</b> ${total_equity:.2f}<br><br>
-            Trades: {trades} | Wins: {wins} | Losses: {losses} | Win Rate: {winrate}%<br>
-            Entry: {entry_threshold:.4f} | TP: {tp_percent:.4f} | SL: {sl_percent:.4f}
+            Cash: ${cash:.2f}<br>
+            Positions Value: ${total_positions_value:.2f}<br>
+            Total Equity: ${total_equity:.2f}<br><br>
+            Trades: {trades} | Wins: {wins} | Losses: {losses} | Win Rate: {winrate}%
         </div>
 
         <div class="card">
             <h2>Open Positions</h2>
             <table>
-                <tr>
-                    <th>Coin</th><th>Qty</th><th>Entry</th><th>Current</th><th>P/L</th>
-                </tr>
+                <tr><th>Coin</th><th>Qty</th><th>Entry</th><th>Current</th><th>P/L</th></tr>
                 {pos_rows if pos_rows else "<tr><td colspan=5>None</td></tr>"}
             </table>
         </div>
@@ -258,8 +243,6 @@ def dashboard():
                 {rows}
             </table>
         </div>
-
-        <p>Auto-refresh every {REFRESH_SECONDS}s • Live Simulation Mode</p>
     </body>
     </html>
     """)
