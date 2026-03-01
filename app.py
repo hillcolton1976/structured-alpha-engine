@@ -8,6 +8,8 @@ app = Flask(__name__)
 STARTING_BALANCE = 50.0
 cash = STARTING_BALANCE
 positions = {}
+trade_history = []
+
 trades = 0
 wins = 0
 losses = 0
@@ -98,13 +100,28 @@ def trade_logic():
             if hold_time < MIN_HOLD_TIME:
                 continue
 
-            pnl = (price - pos["entry_price"]) / pos["entry_price"]
+            pnl_percent = (price - pos["entry_price"]) / pos["entry_price"]
+            pnl_dollars = (price - pos["entry_price"]) * pos["amount"]
 
-            if pnl > 0.04 or pnl < -0.03:
+            if pnl_percent > 0.04 or pnl_percent < -0.03:
                 cash += pos["amount"] * price
                 trades += 1
-                wins += 1 if pnl > 0 else 0
-                losses += 1 if pnl <= 0 else 0
+
+                if pnl_percent > 0:
+                    wins += 1
+                else:
+                    losses += 1
+
+                trade_history.insert(0, {
+                    "type": "SELL",
+                    "symbol": symbol,
+                    "entry": pos["entry_price"],
+                    "exit": price,
+                    "profit_dollar": pnl_dollars,
+                    "profit_percent": pnl_percent * 100,
+                    "time": time.strftime("%H:%M:%S")
+                })
+
                 del positions[symbol]
                 last_trade_time = now
 
@@ -129,6 +146,16 @@ def trade_logic():
 
                 cash -= size
                 last_trade_time = now
+
+                trade_history.insert(0, {
+                    "type": "BUY",
+                    "symbol": symbol,
+                    "entry": price,
+                    "exit": "-",
+                    "profit_dollar": 0,
+                    "profit_percent": 0,
+                    "time": time.strftime("%H:%M:%S")
+                })
 
 
 # ---------------- DASHBOARD ----------------
@@ -167,46 +194,35 @@ def dashboard():
 
     total_equity = cash + total_positions_value
     update_level(total_equity)
-
     win_rate = round((wins / trades) * 100, 2) if trades > 0 else 0
+
+    history_rows = ""
+    for trade in trade_history[:20]:
+        color = "#00ff88" if trade["profit_percent"] >= 0 else "#ff4d4d"
+        history_rows += f"""
+        <tr>
+            <td>{trade['time']}</td>
+            <td>{trade['type']}</td>
+            <td>{trade['symbol']}</td>
+            <td>${trade['entry']}</td>
+            <td>${trade['exit']}</td>
+            <td style="color:{color}">${trade['profit_dollar']:.2f}</td>
+            <td style="color:{color}">{trade['profit_percent']:.2f}%</td>
+        </tr>
+        """
 
     return f"""
     <html>
     <head>
         <title>Elite AI Trader</title>
         <style>
-            body {{
-                background: #0f1117;
-                color: white;
-                font-family: Arial;
-                padding: 20px;
-            }}
-            h1 {{
-                color: #00ffcc;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 20px;
-            }}
-            th, td {{
-                padding: 10px;
-                text-align: center;
-                border-bottom: 1px solid #333;
-            }}
-            th {{
-                background: #1a1d26;
-                color: #00ffcc;
-            }}
-            tr:hover {{
-                background: #1f2330;
-            }}
-            .card {{
-                background: #1a1d26;
-                padding: 15px;
-                margin: 10px 0;
-                border-radius: 8px;
-            }}
+            body {{ background:#0f1117; color:white; font-family:Arial; padding:20px; }}
+            h1 {{ color:#00ffcc; }}
+            table {{ width:100%; border-collapse:collapse; margin-top:20px; }}
+            th, td {{ padding:8px; text-align:center; border-bottom:1px solid #333; }}
+            th {{ background:#1a1d26; color:#00ffcc; }}
+            tr:hover {{ background:#1f2330; }}
+            .card {{ background:#1a1d26; padding:15px; margin:10px 0; border-radius:8px; }}
         </style>
     </head>
     <body>
@@ -214,7 +230,7 @@ def dashboard():
 
         <div class="card">
             <b>Cash:</b> ${cash:.2f} |
-            <b>Positions Value:</b> ${total_positions_value:.2f} |
+            <b>Positions:</b> ${total_positions_value:.2f} |
             <b>Total Equity:</b> ${total_equity:.2f}
         </div>
 
@@ -226,21 +242,37 @@ def dashboard():
             <b>Win Rate:</b> {win_rate}%
         </div>
 
+        <h2>Open Positions</h2>
         <table>
             <tr>
                 <th>Coin</th>
                 <th>$ Invested</th>
-                <th>Entry Price</th>
-                <th>Current Price</th>
-                <th>Current Value</th>
+                <th>Entry</th>
+                <th>Current</th>
+                <th>Value</th>
                 <th>PnL %</th>
             </tr>
             {rows}
         </table>
+
+        <h2>Trade History (Last 20)</h2>
+        <table>
+            <tr>
+                <th>Time</th>
+                <th>Type</th>
+                <th>Coin</th>
+                <th>Entry</th>
+                <th>Exit</th>
+                <th>Profit $</th>
+                <th>Profit %</th>
+            </tr>
+            {history_rows}
+        </table>
+
     </body>
     </html>
     """
-    
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
