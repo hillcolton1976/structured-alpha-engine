@@ -2,13 +2,10 @@ from flask import Flask, render_template_string
 import requests
 import threading
 import time
-import statistics
 
 app = Flask(__name__)
 
-# =========================
-# CONFIG
-# =========================
+# ================= CONFIG =================
 
 START_BALANCE = 50.0
 MAX_POSITIONS = 5
@@ -35,9 +32,7 @@ take_profit = 0.015
 stop_loss = 0.01
 
 
-# =========================
-# PRICE FETCH
-# =========================
+# ================= PRICE FETCH =================
 
 def get_prices():
     try:
@@ -56,16 +51,12 @@ def get_prices():
         return {}
 
 
-# =========================
-# SCORE CALCULATION
-# =========================
+# ================= SCORING =================
 
 def calculate_scores(prices):
     scores = {}
-
     for s in SYMBOLS:
         history = price_history[s]
-
         if len(history) < 10:
             scores[s] = 0
             continue
@@ -81,27 +72,21 @@ def calculate_scores(prices):
     return scores
 
 
-# =========================
-# ADAPTIVE LEARNING
-# =========================
+# ================= ADAPT =================
 
 def adapt():
     global entry_threshold
-
     if trades < 5:
         return
 
     winrate = wins / trades
-
     if winrate < 0.4:
         entry_threshold *= 0.9
     elif winrate > 0.6:
         entry_threshold *= 1.05
 
 
-# =========================
-# TRADER LOOP
-# =========================
+# ================= TRADER =================
 
 def trader():
     global balance, wins, losses, trades
@@ -112,7 +97,6 @@ def trader():
             time.sleep(5)
             continue
 
-        # update history
         for s in prices:
             price_history[s].append(prices[s])
             if len(price_history[s]) > 50:
@@ -120,7 +104,7 @@ def trader():
 
         scores = calculate_scores(prices)
 
-        # SELL LOGIC
+        # SELL
         for s in list(positions.keys()):
             entry = positions[s]["entry"]
             qty = positions[s]["qty"]
@@ -131,15 +115,13 @@ def trader():
             if change >= take_profit or change <= -stop_loss:
                 balance += qty * current
                 trades += 1
-
                 if change > 0:
                     wins += 1
                 else:
                     losses += 1
-
                 del positions[s]
 
-        # BUY LOGIC
+        # BUY
         sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
         for s, score in sorted_scores:
@@ -159,14 +141,15 @@ def trader():
         time.sleep(5)
 
 
-# =========================
-# DASHBOARD
-# =========================
+# ================= DASHBOARD =================
 
 @app.route("/")
 def dashboard():
     prices = get_prices()
     scores = calculate_scores(prices) if prices else {}
+
+    # SORT MARKET BY SCORE
+    sorted_market = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
     positions_value = 0
     position_rows = ""
@@ -174,26 +157,35 @@ def dashboard():
     for s, data in positions.items():
         current = prices.get(s, data["entry"])
         value = data["qty"] * current
-        positions_value += value
         pnl = value - (data["qty"] * data["entry"])
+        positions_value += value
+
+        color = "#00ff88" if pnl >= 0 else "#ff4d4d"
 
         position_rows += f"""
         <tr>
             <td>{s}</td>
             <td>{round(data['qty'],6)}</td>
-            <td>${data['entry']:.4f}</td>
-            <td>${current:.4f}</td>
-            <td>${round(pnl,2)}</td>
+            <td>${data['entry']:.6f}</td>
+            <td>${current:.6f}</td>
+            <td style='color:{color};'>${round(pnl,2)}</td>
         </tr>
         """
 
     total_equity = balance + positions_value
 
     score_rows = ""
-    for s in SYMBOLS:
+    for s, score in sorted_market:
         price = prices.get(s, 0)
-        score = scores.get(s, 0)
-        score_rows += f"<tr><td>{s}</td><td>${price:.6f}</td><td>{score}</td></tr>"
+        color = "#00ff88" if score > 0 else "#ff4d4d" if score < 0 else "white"
+
+        score_rows += f"""
+        <tr>
+            <td>{s}</td>
+            <td>${price:.6f}</td>
+            <td style='color:{color};'>{score}</td>
+        </tr>
+        """
 
     html = f"""
     <html>
@@ -206,34 +198,80 @@ def dashboard():
         color:white;
         padding:20px;
     }}
-    table {{ width:100%; margin-bottom:30px; }}
-    td,th {{ padding:6px; }}
-    h1 {{ color:#ffb347; }}
+
+    .card {{
+        background: rgba(255,255,255,0.05);
+        padding:20px;
+        border-radius:12px;
+        margin-bottom:20px;
+    }}
+
+    table {{
+        width:100%;
+        border-collapse: collapse;
+    }}
+
+    th {{
+        text-align:left;
+        border-bottom:1px solid #555;
+        padding:8px 4px;
+    }}
+
+    td {{
+        padding:6px 4px;
+        border-bottom:1px solid #333;
+    }}
+
+    h1 {{
+        color:#ffb347;
+    }}
+
+    .green {{ color:#00ff88; }}
+    .red {{ color:#ff4d4d; }}
+
     </style>
     </head>
     <body>
+
     <h1>🔥 ELITE TOP-35 ADAPTIVE AI</h1>
 
-    <h3>Cash: ${balance:.2f}</h3>
-    <h3>Positions Value: ${positions_value:.2f}</h3>
-    <h2>Total Equity: ${total_equity:.2f}</h2>
+    <div class="card">
+        <h2>Account</h2>
+        <p>Cash: <b>${balance:.2f}</b></p>
+        <p>Positions Value: <b>${positions_value:.2f}</b></p>
+        <p>Total Equity: <b>${total_equity:.2f}</b></p>
+        <p>Trades: {trades} | Wins: {wins} | Losses: {losses}</p>
+        <p>Entry Threshold: {entry_threshold:.5f}</p>
+    </div>
 
-    <p>Trades: {trades} | Wins: {wins} | Losses: {losses}</p>
-    <p>Entry Threshold: {entry_threshold:.5f}</p>
+    <div class="card">
+        <h2>Open Positions</h2>
+        <table>
+        <tr>
+            <th>Coin</th>
+            <th>Qty</th>
+            <th>Entry</th>
+            <th>Current</th>
+            <th>P/L</th>
+        </tr>
+        {position_rows if position_rows else "<tr><td colspan=5>None</td></tr>"}
+        </table>
+    </div>
 
-    <h2>Open Positions</h2>
-    <table border="1">
-    <tr><th>Coin</th><th>Qty</th><th>Entry</th><th>Current</th><th>P/L</th></tr>
-    {position_rows if position_rows else "<tr><td colspan=5>None</td></tr>"}
-    </table>
+    <div class="card">
+        <h2>Live Market Scores</h2>
+        <table>
+        <tr>
+            <th>Coin</th>
+            <th>Price</th>
+            <th>Score</th>
+        </tr>
+        {score_rows}
+        </table>
+    </div>
 
-    <h2>Live Market Scores</h2>
-    <table border="1">
-    <tr><th>Coin</th><th>Price</th><th>Score</th></tr>
-    {score_rows}
-    </table>
-
-    </body></html>
+    </body>
+    </html>
     """
 
     return render_template_string(html)
