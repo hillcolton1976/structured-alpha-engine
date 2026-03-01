@@ -1,50 +1,115 @@
-@app.route("/")
-def dashboard():
-    prices = get_prices()
-    scores = calculate_scores(prices)
-
-    total_positions_value = sum(
-        positions[s]['qty'] * prices.get(s, positions[s]['entry'])
-        for s in positions
-    )
-    total_equity = cash + total_positions_value
-
-    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-
-    return f"""
-    <html>
-    <head>
-    <meta http-equiv="refresh" content="5">
+return f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ELITE AI TRADER</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-    body {{ background:#0f2027; color:white; font-family:Arial; padding:20px; }}
-    h1 {{ color:gold; }}
-    .card {{ background:#1c3b45; padding:20px; margin-bottom:20px; border-radius:10px; }}
-    table {{ width:100%; border-collapse:collapse; }}
-    th, td {{ padding:8px; border-bottom:1px solid #333; }}
-    .green {{ color:#00ff99; }}
-    .red {{ color:#ff4d4d; }}
+
+        body {{
+            background: linear-gradient(135deg, #0f172a, #0a0f1f);
+            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            padding: 20px;
+        }}
+
+        h1 {{
+            font-size: 22px;
+            margin-bottom: 20px;
+        }}
+
+        .card {{
+            background: #1e293b;
+            padding: 18px;
+            border-radius: 16px;
+            margin-bottom: 18px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+        }}
+
+        .equity {{
+            font-size: 20px;
+            font-weight: bold;
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }}
+
+        th {{
+            text-align: left;
+            padding-bottom: 8px;
+            color: #94a3b8;
+        }}
+
+        td {{
+            padding: 8px 0;
+            border-bottom: 1px solid #334155;
+        }}
+
+        .green {{
+            color: #22c55e;
+        }}
+
+        .red {{
+            color: #ef4444;
+        }}
+
+        .small {{
+            font-size: 12px;
+            color: #94a3b8;
+        }}
+
     </style>
-    </head>
-    <body>
+</head>
 
-    <h1>🔥 ELITE TOP-35 ADAPTIVE AI</h1>
+<body>
 
-    <div class="card">
-    <b>Cash:</b> ${cash:.2f}<br>
-    <b>Positions Value:</b> ${total_positions_value:.2f}<br>
-    <b>Total Equity:</b> ${total_equity:.2f}<br><br>
-    Trades: {trades} | Wins: {wins} | Losses: {losses}<br>
-    Entry Threshold: {entry_threshold:.4f}
-    </div>
+<h1>🔥 ELITE AI TRADER</h1>
 
-    <div class="card">
-    <h3>Live Market Scores</h3>
+<div class="card">
+    <h3>Account</h3>
+    <p>Cash: ${cash:.2f}</p>
+    <p>Positions Value: ${total_positions_value:.2f}</p>
+    <p class="equity">Total Equity: ${total_equity:.2f}</p>
+    <p class="small">Unrealized P/L: ${total_unrealized:.2f}</p>
+</div>
+
+<div class="card">
+    <h3>Performance</h3>
+    <p>Trades: {trades}</p>
+    <p>Wins: <span class="green">{wins}</span></p>
+    <p>Losses: <span class="red">{losses}</span></p>
+    <p>Adaptive Threshold: {entry_threshold:.4f}</p>
+</div>
+
+<div class="card">
+    <h3>Open Positions</h3>
     <table>
-    <tr><th>Coin</th><th>Price</th><th>Score</th></tr>
-    {''.join(f"<tr><td>{s}</td><td>${prices.get(s,0):.4f}</td><td>{score:.4f}</td></tr>" for s,score in sorted_scores)}
+        <tr>
+            <th>Coin</th>
+            <th>Qty</th>
+            <th>Entry</th>
+            <th>Value</th>
+            <th>P/L</th>
+        </tr>
+        {position_rows}
     </table>
-    </div>
+</div>
 
-    </body>
-    </html>
-    """
+<div class="card">
+    <h3>Top 35 USDT Pairs</h3>
+    <table>
+        <tr>
+            <th>Coin</th>
+            <th>Price</th>
+            <th>24h %</th>
+        </tr>
+        {rows}
+    </table>
+</div>
+
+</body>
+</html>
+"""
