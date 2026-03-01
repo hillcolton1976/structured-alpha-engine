@@ -1,68 +1,108 @@
 import requests
 from flask import Flask
+import random
 
 app = Flask(__name__)
 
 # =========================
-# ELITE AI TRADER v3.1
+# SIM STATE
 # =========================
 
-STARTING_CASH = 50.0
-cash = STARTING_CASH
-positions = {}  # symbol: {"qty": float, "entry": float}
+START_BALANCE = 50.0
+
+cash = START_BALANCE
+positions = {}
 trades = 0
 wins = 0
 losses = 0
-
-entry_threshold = 0.002
-position_size_pct = 0.20
+entry_threshold = 0.0020  # Adaptive entry trigger
 
 
 # =========================
 # SAFE BINANCE FETCH
 # =========================
 
-def get_top_pairs():
+def get_top_pairs(limit=35):
     try:
         url = "https://api.binance.com/api/v3/ticker/24hr"
-        r = requests.get(url, timeout=5)
+        response = requests.get(url, timeout=10)
 
-        if r.status_code != 200:
+        if response.status_code != 200:
             return []
 
-        data = r.json()
+        data = response.json()
 
         if not isinstance(data, list):
             return []
 
-        usdt = [x for x in data if x["symbol"].endswith("USDT")]
-        usdt.sort(key=lambda x: float(x["quoteVolume"]), reverse=True)
+        usdt_pairs = [
+            x for x in data
+            if isinstance(x, dict)
+            and "symbol" in x
+            and x["symbol"].endswith("USDT")
+        ]
 
-        return usdt[:35]  # 35 coins
+        sorted_pairs = sorted(
+            usdt_pairs,
+            key=lambda x: float(x.get("quoteVolume", 0)),
+            reverse=True
+        )
 
-    except:
+        return sorted_pairs[:limit]
+
+    except Exception:
         return []
 
 
 # =========================
-# ADAPTIVE STRATEGY
+# PRICE FETCH
 # =========================
 
-def adapt_strategy():
-    global entry_threshold, wins, losses
+def get_price(symbol):
+    try:
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        return float(data["price"])
+    except Exception:
+        return None
 
-    total = wins + losses
-    if total < 5:
-        return
 
-    winrate = wins / total
+# =========================
+# SIMPLE ADAPTIVE LOGIC
+# =========================
 
-    if winrate > 0.6:
-        entry_threshold *= 0.95
-    elif winrate < 0.4:
-        entry_threshold *= 1.05
+def maybe_trade(symbol, price):
+    global cash, positions, trades, wins, losses, entry_threshold
 
-    entry_threshold = max(0.0005, min(entry_threshold, 0.01))
+    # Random micro "AI score"
+    score = random.uniform(0, 0.01)
+
+    if symbol not in positions and score > entry_threshold and cash > 5:
+        allocation = cash * 0.25
+        qty = allocation / price
+        positions[symbol] = {
+            "entry": price,
+            "qty": qty
+        }
+        cash -= allocation
+        trades += 1
+
+    elif symbol in positions:
+        entry = positions[symbol]["entry"]
+        qty = positions[symbol]["qty"]
+        pnl_pct = (price - entry) / entry
+
+        if pnl_pct > 0.01 or pnl_pct < -0.01:
+            value = qty * price
+            cash += value
+            if pnl_pct > 0:
+                wins += 1
+                entry_threshold *= 1.01
+            else:
+                losses += 1
+                entry_threshold *= 0.99
+            del positions[symbol]
 
 
 # =========================
@@ -71,130 +111,108 @@ def adapt_strategy():
 
 @app.route("/")
 def dashboard():
-    global cash, positions, trades, wins, losses
+    global cash, positions
 
-    pairs = get_top_pairs()
+    coins = get_top_pairs(35)
 
-    rows = ""
-    total_positions_value = 0
-
-    # Live trading logic
-    for p in pairs:
-        symbol = p["symbol"]
-        price = float(p["lastPrice"])
-        change = float(p["priceChangePercent"]) / 100
-
-        score = change
-
-        # ENTRY
-        if score > entry_threshold and symbol not in positions and cash > 5:
-            allocation = cash * position_size_pct
-            qty = allocation / price
-            positions[symbol] = {"qty": qty, "entry": price}
-            cash -= allocation
-            trades += 1
-
-        # EXIT
-        if symbol in positions:
-            entry_price = positions[symbol]["entry"]
-            qty = positions[symbol]["qty"]
-
-            if price >= entry_price * 1.02:
-                cash += qty * price
-                del positions[symbol]
-                wins += 1
-
-            elif price <= entry_price * 0.98:
-                cash += qty * price
-                del positions[symbol]
-                losses += 1
-
-        rows += f"""
-        <tr>
-            <td>{symbol}</td>
-            <td>${price:,.4f}</td>
-            <td>{change*100:.2f}%</td>
-        </tr>
-        """
-
-    # Build positions table with $ value
+    market_rows = ""
     position_rows = ""
-    total_unrealized = 0
 
-    for symbol, data in positions.items():
-        price = next((float(x["lastPrice"]) for x in pairs if x["symbol"] == symbol), data["entry"])
-        qty = data["qty"]
-        entry = data["entry"]
+    total_positions_value = 0
+    unrealized_pl = 0
 
-        value = qty * price
-        pnl = value - (qty * entry)
+    # Market Table
+    for coin in coins:
+        symbol = coin["symbol"]
+        price = float(coin["lastPrice"])
+        change = float(coin["priceChangePercent"])
 
-        total_positions_value += value
-        total_unrealized += pnl
+        maybe_trade(symbol, price)
 
-        color = "#22c55e" if pnl >= 0 else "#ef4444"
-
-        position_rows += f"""
+        market_rows += f"""
         <tr>
             <td>{symbol}</td>
-            <td>{qty:.6f}</td>
-            <td>${entry:.4f}</td>
-            <td>${value:.2f}</td>
-            <td style='color:{color}'>${pnl:.2f}</td>
+            <td>${price:.6f}</td>
+            <td>{change:.2f}%</td>
         </tr>
         """
 
-    if not positions:
-        position_rows = "<tr><td colspan='5'>No open positions</td></tr>"
+    # Position Table
+    if positions:
+        for symbol, data in positions.items():
+            current_price = get_price(symbol)
+            if current_price is None:
+                continue
+
+            qty = data["qty"]
+            entry = data["entry"]
+            value = qty * current_price
+            pnl = value - (qty * entry)
+
+            total_positions_value += value
+            unrealized_pl += pnl
+
+            position_rows += f"""
+            <tr>
+                <td>{symbol}</td>
+                <td>{qty:.4f}</td>
+                <td>${entry:.6f}</td>
+                <td>${value:.2f}</td>
+                <td>${pnl:.2f}</td>
+            </tr>
+            """
+    else:
+        position_rows = """
+        <tr>
+            <td colspan="5">No open positions</td>
+        </tr>
+        """
 
     total_equity = cash + total_positions_value
-
-    adapt_strategy()
 
     return f"""
     <html>
     <head>
         <title>ELITE AI TRADER v3.1</title>
+        <meta http-equiv="refresh" content="10">
         <style>
             body {{
-                background-color: #0f172a;
+                background: #0b132b;
                 color: white;
                 font-family: Arial;
-                padding: 30px;
+                padding: 20px;
             }}
             .card {{
-                background: #1e293b;
+                background: #1c2541;
                 padding: 20px;
                 margin-bottom: 20px;
-                border-radius: 12px;
+                border-radius: 10px;
             }}
             table {{
                 width: 100%;
                 border-collapse: collapse;
             }}
-            td, th {{
+            th, td {{
                 padding: 8px;
-                border-bottom: 1px solid #334155;
-            }}
-            th {{
+                border-bottom: 1px solid #3a506b;
                 text-align: left;
             }}
         </style>
     </head>
     <body>
 
-        <h1>🔥 ELITE AI TRADER v3.1</h1>
+        <h2>🔥 ELITE AI TRADER v3.1</h2>
 
         <div class="card">
-            <h2>Account</h2>
+            <h3>Account</h3>
             <p>Cash: ${cash:.2f}</p>
             <p>Positions Value: ${total_positions_value:.2f}</p>
             <p><b>Total Equity: ${total_equity:.2f}</b></p>
-            <p>Unrealized P/L: ${total_unrealized:.2f}</p>
+            <p>Unrealized P/L: ${unrealized_pl:.2f}</p>
         </div>
 
         <div class="card">
-            <h2>Stats</h2>
+            <h3>Stats</h3>
             <p>Trades: {trades}</p>
             <p>Wins: {wins}</p>
             <p>Losses: {losses}</p>
@@ -202,7 +220,7 @@ def dashboard():
         </div>
 
         <div class="card">
-            <h2>Open Positions</h2>
+            <h3>Open Positions</h3>
             <table>
                 <tr>
                     <th>Coin</th>
@@ -216,14 +234,14 @@ def dashboard():
         </div>
 
         <div class="card">
-            <h2>Top 35 USDT Pairs</h2>
+            <h3>Top 35 USDT Pairs</h3>
             <table>
                 <tr>
                     <th>Coin</th>
                     <th>Price</th>
                     <th>24h %</th>
                 </tr>
-                {rows}
+                {market_rows}
             </table>
         </div>
 
