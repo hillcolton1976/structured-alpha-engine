@@ -17,23 +17,31 @@ xp = 0
 wins = 0
 losses = 0
 
+last_market = []
+last_fetch_time = 0
 
-# -----------------------
-# SCORING ENGINE
-# -----------------------
+
+# -------------------------
+# SCORE ENGINE
+# -------------------------
 def score_coin(change):
     noise = random.uniform(-1, 1)
-    level_boost = bot_level * 0.3
-    return change + noise + level_boost
+    intelligence = bot_level * 0.3
+    return change + noise + intelligence
 
 
-# -----------------------
-# LIVE MARKET
-# -----------------------
+# -------------------------
+# FETCH MARKET (with fallback)
+# -------------------------
 def get_market():
+    global last_market, last_fetch_time
+
+    # Avoid spamming CoinGecko
+    if time.time() - last_fetch_time < 25 and last_market:
+        return last_market
+
     try:
         url = "https://api.coingecko.com/api/v3/coins/markets"
-
         params = {
             "vs_currency": "usd",
             "order": "volume_desc",
@@ -44,35 +52,37 @@ def get_market():
         }
 
         r = requests.get(url, params=params, timeout=10)
+
         if r.status_code != 200:
-            return []
+            return last_market
 
         data = r.json()
 
         market = []
-
         for coin in data:
-            symbol = coin["symbol"].upper()
-            price = float(coin["current_price"])
-            change = float(coin["price_change_percentage_24h"] or 0)
-
             market.append({
-                "symbol": symbol,
-                "price": price,
-                "change": change,
-                "score": score_coin(change)
+                "symbol": coin["symbol"].upper(),
+                "price": float(coin["current_price"]),
+                "change": float(coin["price_change_percentage_24h"] or 0),
             })
 
+        for coin in market:
+            coin["score"] = score_coin(coin["change"])
+
         market.sort(key=lambda x: x["score"], reverse=True)
+
+        last_market = market
+        last_fetch_time = time.time()
+
         return market
 
     except:
-        return []
+        return last_market
 
 
-# -----------------------
+# -------------------------
 # LEVEL SYSTEM
-# -----------------------
+# -------------------------
 def level_up():
     global xp, bot_level
     if xp >= bot_level * 5:
@@ -80,27 +90,25 @@ def level_up():
         bot_level += 1
 
 
-# -----------------------
+# -------------------------
 # TRADE LOGIC
-# -----------------------
+# -------------------------
 def trade_logic(market):
-    global cash, xp, wins, losses
+    global cash, wins, losses, xp
 
     if not market:
         return
 
-    top = market[:10]
-
-    # SELL LOGIC
+    # SELL
     for symbol in list(portfolio.keys()):
         coin = next((c for c in market if c["symbol"] == symbol), None)
         if not coin:
             continue
 
         if coin["score"] < -3:
-            amount = portfolio[symbol]
-            sell_value = amount * coin["price"]
-            entry_value = amount * entry_prices[symbol]
+            qty = portfolio[symbol]
+            sell_value = qty * coin["price"]
+            entry_value = qty * entry_prices[symbol]
             pnl = sell_value - entry_value
 
             cash += sell_value
@@ -111,80 +119,84 @@ def trade_logic(market):
                 losses += 1
 
             trade_log.append(
-                f"SOLD {symbol} | PnL: ${round(pnl,2)}"
+                f"SOLD {symbol} | PnL ${round(pnl,2)}"
             )
 
             del portfolio[symbol]
             del entry_prices[symbol]
             xp += 1
 
-    # BUY LOGIC
-    for coin in top:
+    # BUY
+    for coin in market[:12]:
         if len(portfolio) >= MAX_POSITIONS:
             break
 
-        if coin["score"] > 3 and coin["symbol"] not in portfolio:
-            invest = cash * 0.2
-            if invest > 1:
-                qty = invest / coin["price"]
+        if coin["score"] > 4 and coin["symbol"] not in portfolio:
+            invest_amount = cash * 0.20
+
+            if invest_amount > 2:
+                qty = invest_amount / coin["price"]
+
                 portfolio[coin["symbol"]] = qty
                 entry_prices[coin["symbol"]] = coin["price"]
-                cash -= invest
+                cash -= invest_amount
 
                 trade_log.append(
                     f"BOUGHT {coin['symbol']} @ ${round(coin['price'],4)}"
                 )
+
                 xp += 1
 
     level_up()
 
 
-# -----------------------
+# -------------------------
 # DASHBOARD
-# -----------------------
+# -------------------------
 @app.route("/")
 def dashboard():
     market = get_market()
     trade_logic(market)
 
-    total_positions = 0
+    total_positions_value = 0
 
-    for symbol, amount in portfolio.items():
+    for symbol, qty in portfolio.items():
         coin = next((c for c in market if c["symbol"] == symbol), None)
         if coin:
-            total_positions += amount * coin["price"]
+            total_positions_value += qty * coin["price"]
 
-    total_equity = cash + total_positions
-
-    winrate = round((wins / (wins + losses) * 100), 2) if (wins + losses) > 0 else 0
+    total_equity = cash + total_positions_value
+    total_trades = wins + losses
+    winrate = round((wins / total_trades * 100), 2) if total_trades > 0 else 0
 
     html = f"""
     <html>
     <head>
-        <meta http-equiv="refresh" content="60">
+        <meta http-equiv="refresh" content="30">
         <title>ELITE AI TRADER</title>
         <style>
             body {{
-                background:#0f172a;
-                font-family:Arial;
+                background:linear-gradient(135deg,#0f172a,#020617);
                 color:white;
-                padding:20px;
+                font-family:Arial;
+                padding:25px;
             }}
             h1 {{
                 color:#38bdf8;
             }}
             .card {{
                 background:#1e293b;
-                padding:15px;
-                border-radius:10px;
-                margin-bottom:20px;
+                padding:18px;
+                border-radius:15px;
+                margin-bottom:25px;
+                box-shadow:0 0 20px rgba(0,0,0,0.5);
             }}
             table {{
                 width:100%;
                 border-collapse:collapse;
             }}
             th, td {{
-                padding:8px;
+                padding:10px;
                 border-bottom:1px solid #334155;
             }}
             .green {{ color:#22c55e; }}
@@ -198,15 +210,18 @@ def dashboard():
     <div class="card">
         <h3>Level: {bot_level}</h3>
         <h3>Cash: ${round(cash,2)}</h3>
-        <h3>Portfolio Value: ${round(total_positions,2)}</h3>
+        <h3>Portfolio Value: ${round(total_positions_value,2)}</h3>
         <h2>Total Equity: ${round(total_equity,2)}</h2>
         <h3 class="green">Wins: {wins}</h3>
         <h3 class="red">Losses: {losses}</h3>
         <h3>Win Rate: {winrate}%</h3>
     </div>
+    """
 
+    # Held coins
+    html += """
     <div class="card">
-        <h2>Held Coins (0-7)</h2>
+        <h2>Held Coins (0–7)</h2>
         <table>
         <tr>
             <th>Coin</th>
@@ -217,14 +232,14 @@ def dashboard():
         </tr>
     """
 
-    for symbol, amount in portfolio.items():
+    for symbol, qty in portfolio.items():
         coin = next((c for c in market if c["symbol"] == symbol), None)
         if coin:
-            value = amount * coin["price"]
+            value = qty * coin["price"]
             html += f"""
             <tr>
                 <td>{symbol}</td>
-                <td>{round(amount,4)}</td>
+                <td>{round(qty,4)}</td>
                 <td>${round(entry_prices[symbol],4)}</td>
                 <td>${round(coin['price'],4)}</td>
                 <td>${round(value,2)}</td>
@@ -233,6 +248,7 @@ def dashboard():
 
     html += "</table></div>"
 
+    # Market
     html += """
     <div class="card">
         <h2>Top 35 Market</h2>
@@ -258,12 +274,13 @@ def dashboard():
 
     html += "</table></div>"
 
+    # Trade history
     html += """
     <div class="card">
         <h2>Trade History</h2>
     """
 
-    for trade in reversed(trade_log[-15:]):
+    for trade in reversed(trade_log[-20:]):
         html += f"<p>{trade}</p>"
 
     html += "</div></body></html>"
