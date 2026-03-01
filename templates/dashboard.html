@@ -9,21 +9,24 @@ def dashboard():
     )
     total_equity = cash + total_positions_value
 
-    html = f"""
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+    return f"""
     <html>
     <head>
     <meta http-equiv="refresh" content="5">
     <style>
-    body {{ background: #0f2027; color: white; font-family: Arial; padding: 20px; }}
-    h1 {{ color: gold; }}
-    .card {{ background: #1c3b45; padding: 20px; margin-bottom: 20px; border-radius: 10px; }}
-    table {{ width: 100%; border-collapse: collapse; }}
-    th, td {{ padding: 8px; border-bottom: 1px solid #333; }}
-    .green {{ color: #00ff99; }}
-    .red {{ color: #ff4d4d; }}
+    body {{ background:#0f2027; color:white; font-family:Arial; padding:20px; }}
+    h1 {{ color:gold; }}
+    .card {{ background:#1c3b45; padding:20px; margin-bottom:20px; border-radius:10px; }}
+    table {{ width:100%; border-collapse:collapse; }}
+    th, td {{ padding:8px; border-bottom:1px solid #333; }}
+    .green {{ color:#00ff99; }}
+    .red {{ color:#ff4d4d; }}
     </style>
     </head>
     <body>
+
     <h1>🔥 ELITE TOP-35 ADAPTIVE AI</h1>
 
     <div class="card">
@@ -35,44 +38,13 @@ def dashboard():
     </div>
 
     <div class="card">
-    <h3>Open Positions</h3>
-    <table>
-    <tr><th>Coin</th><th>Qty</th><th>Entry</th><th>Current</th><th>P/L</th></tr>
-    """
-
-    if not positions:
-        html += "<tr><td colspan=5>None</td></tr>"
-    else:
-        for s, data in positions.items():
-            current = prices.get(s, data["entry"])
-            pnl = (current - data["entry"]) / data["entry"]
-            color = "green" if pnl > 0 else "red"
-
-            html += f"""
-            <tr>
-            <td>{s}</td>
-            <td>{data['qty']:.4f}</td>
-            <td>${data['entry']:.4f}</td>
-            <td>${current:.4f}</td>
-            <td class="{color}">{pnl*100:.2f}%</td>
-            </tr>
-            """
-
-    html += "</table></div>"
-
-    html += """
-    <div class='card'>
     <h3>Live Market Scores</h3>
     <table>
     <tr><th>Coin</th><th>Price</th><th>Score</th></tr>
+    {''.join(f"<tr><td>{s}</td><td>${prices.get(s,0):.4f}</td><td>{score:.4f}</td></tr>" for s,score in sorted_scores)}
+    </table>
+    </div>
+
+    </body>
+    </html>
     """
-
-    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-
-    for s, score in sorted_scores:
-        price = prices.get(s, 0)
-        html += f"<tr><td>{s}</td><td>${price:.4f}</td><td>{score:.4f}</td></tr>"
-
-    html += "</table></div></body></html>"
-
-    return html
