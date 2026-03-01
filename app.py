@@ -1,158 +1,186 @@
 import requests
 import time
+import random
 from flask import Flask
 
 app = Flask(__name__)
 
-STARTING_CAPITAL = 10.0
-DEPLOYMENT_RATIO = 0.90
-MAX_POSITIONS = 5
-REBALANCE_COOLDOWN = 120  # 2 minutes
-
-cash = STARTING_CAPITAL
+STARTING_BALANCE = 50.0
+cash = STARTING_BALANCE
 positions = {}
-last_rebalance = 0
-total_trades = 0
+trade_history = []
 
+level = 1
+wins = 0
+losses = 0
+trades = 0
 
-# ================= MARKET =================
+MIN_HOLD_TIME = 600
+TRADE_COOLDOWN = 180
+CONFIDENCE_THRESHOLD = 0.65
+last_trade_time = 0
+
+# -------------------------
+# MARKET DATA
+# -------------------------
+
 def get_market():
     try:
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
             "vs_currency": "usd",
-            "order": "price_change_percentage_24h_desc",
-            "per_page": MAX_POSITIONS,
-            "page": 1
+            "order": "market_cap_desc",
+            "per_page": 35,
+            "page": 1,
+            "sparkline": False
         }
-
-        r = requests.get(url, params=params, timeout=10)
-        if r.status_code != 200:
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code != 200:
             return []
-
-        return r.json()
-
+        data = response.json()
+        return data
     except:
         return []
 
+# -------------------------
+# SIGNAL ENGINE
+# -------------------------
 
-def get_price(coin_id):
-    try:
-        url = "https://api.coingecko.com/api/v3/simple/price"
-        params = {
-            "ids": coin_id,
-            "vs_currencies": "usd"
-        }
+def analyze_coin(coin):
+    change = coin.get("price_change_percentage_24h") or 0
+    volume = coin.get("total_volume") or 0
 
-        r = requests.get(url, params=params, timeout=5)
-        if r.status_code != 200:
-            return 0
+    momentum_score = 0
 
-        return r.json()[coin_id]["usd"]
+    if change > 2:
+        momentum_score += 0.4
+    if change > 5:
+        momentum_score += 0.3
+    if volume > 500000000:
+        momentum_score += 0.2
 
-    except:
-        return 0
+    noise = random.uniform(0, 0.2)
 
+    confidence = momentum_score + noise
+    return confidence
 
-# ================= EQUITY =================
-def current_equity():
-    total = cash
-    for coin_id, pos in positions.items():
-        price = get_price(coin_id)
-        total += pos["qty"] * price
-    return total
+# -------------------------
+# LEVEL SYSTEM
+# -------------------------
 
+def update_level(total_equity):
+    global level
 
-# ================= REBALANCE =================
-def rebalance():
-    global cash, positions, last_rebalance, total_trades
+    win_rate = wins / trades if trades > 0 else 0
 
-    now = time.time()
+    if total_equity > 60 and win_rate > 0.55:
+        level = 2
+    if total_equity > 75 and win_rate > 0.6:
+        level = 3
+    if total_equity > 100 and win_rate > 0.65:
+        level = 4
 
-    if now - last_rebalance < REBALANCE_COOLDOWN:
-        return
+# -------------------------
+# TRADING ENGINE
+# -------------------------
+
+def trade_logic():
+    global cash, trades, wins, losses, last_trade_time
 
     market = get_market()
     if not market:
         return
 
-    equity = current_equity()
-    deploy_capital = equity * DEPLOYMENT_RATIO
-    allocation = deploy_capital / MAX_POSITIONS
-
-    new_positions = {}
+    now = time.time()
 
     for coin in market:
-        coin_id = coin["id"]
+        symbol = coin["symbol"].upper()
         price = coin["current_price"]
 
-        qty = allocation / price
-        new_positions[coin_id] = {"qty": qty}
+        # Skip invalid price
+        if not price or price <= 0:
+            continue
 
-    positions = new_positions
-    cash = equity - deploy_capital
-    total_trades += MAX_POSITIONS
+        # EXIT LOGIC
+        if symbol in positions:
+            position = positions[symbol]
+            hold_time = now - position["entry_time"]
 
-    last_rebalance = now
+            if hold_time < MIN_HOLD_TIME:
+                continue
 
+            pnl = (price - position["entry_price"]) / position["entry_price"]
 
-# ================= DASHBOARD =================
+            if pnl > 0.04 or pnl < -0.03:
+                cash += position["amount"] * price
+                trades += 1
+                if pnl > 0:
+                    wins += 1
+                else:
+                    losses += 1
+                del positions[symbol]
+                last_trade_time = now
+
+        # ENTRY LOGIC
+        else:
+            if now - last_trade_time < TRADE_COOLDOWN:
+                continue
+
+            confidence = analyze_coin(coin)
+
+            if confidence > CONFIDENCE_THRESHOLD and cash > 5:
+                allocation = 0.1 * level
+                size = cash * allocation
+
+                amount = size / price
+
+                positions[symbol] = {
+                    "entry_price": price,
+                    "amount": amount,
+                    "entry_time": now
+                }
+
+                cash -= size
+                last_trade_time = now
+
+# -------------------------
+# DASHBOARD
+# -------------------------
+
 @app.route("/")
 def dashboard():
-    rebalance()
+    global cash
 
-    equity = current_equity()
-    invested = equity - cash
-    deployment = (invested / equity * 100) if equity > 0 else 0
-    pnl = equity - STARTING_CAPITAL
+    trade_logic()
 
-    rows = ""
-    for coin_id, pos in positions.items():
-        price = get_price(coin_id)
-        value = pos["qty"] * price
+    total_positions_value = 0
+    market = get_market()
+    price_lookup = {c["symbol"].upper(): c["current_price"] for c in market}
 
-        rows += f"""
-        <tr>
-            <td>{coin_id.upper()}</td>
-            <td>{round(pos["qty"], 6)}</td>
-            <td>${round(value, 2)}</td>
-        </tr>
-        """
+    for symbol, position in positions.items():
+        current_price = price_lookup.get(symbol, 0)
+        total_positions_value += position["amount"] * current_price
 
-    return f"""
-    <html>
-    <head>
-        <meta http-equiv="refresh" content="10">
-    </head>
-    <body style="background:#0e1a2b;color:white;font-family:Arial;padding:20px;">
+    total_equity = cash + total_positions_value
+    update_level(total_equity)
 
-    <h2 style="color:#4fd1c5;">ELITE AI TRADER (LIVE PAPER MODE)</h2>
+    win_rate = round((wins / trades) * 100, 2) if trades > 0 else 0
 
-    <div style="background:#1f2a3c;padding:20px;border-radius:10px;margin-bottom:20px;">
-        <b>Market Deployment:</b> {round(deployment,2)}%<br>
-        <b>Cash:</b> ${round(cash,2)}<br>
-        <b>Invested:</b> ${round(invested,2)}<br>
-        <b>Total Equity:</b> ${round(equity,2)}<br>
-        <b>PnL:</b> ${round(pnl,2)}<br>
-        <b>Total Trades:</b> {total_trades}
-    </div>
-
-    <div style="background:#1f2a3c;padding:20px;border-radius:10px;">
-        <h3>Positions</h3>
-        <table width="100%">
-            <tr>
-                <th align="left">Coin</th>
-                <th align="left">Quantity</th>
-                <th align="left">Value</th>
-            </tr>
-            {rows}
-        </table>
-    </div>
-
-    </body>
-    </html>
+    html = f"""
+    <h1>ELITE AI TRADER LIVE SIM</h1>
+    <h2>Level: {level}</h2>
+    <h3>Total Equity: ${round(total_equity,2)}</h3>
+    <h3>Cash: ${round(cash,2)}</h3>
+    <h3>In Positions: ${round(total_positions_value,2)}</h3>
+    <h3>Trades: {trades}</h3>
+    <h3>Wins: {wins}</h3>
+    <h3>Losses: {losses}</h3>
+    <h3>Win Rate: {win_rate}%</h3>
+    <hr>
+    <h2>Open Positions</h2>
     """
 
+    for symbol, position in positions.items():
+        html += f"<p>{symbol} — Entry: ${position['entry_price']}</p>"
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    return html
