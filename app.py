@@ -1,95 +1,150 @@
-from flask import Flask, render_template_string
 import requests
 import threading
 import time
+from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
-# ================= CONFIG =================
+# ==============================
+# CONFIG
+# ==============================
 
 START_BALANCE = 50.0
-MAX_POSITIONS = 5
+cash = START_BALANCE
+positions = {}
+price_history = {}
 
-SYMBOLS = [
-"BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT",
-"AVAXUSDT","LINKUSDT","MATICUSDT","TRXUSDT","DOTUSDT","LTCUSDT",
-"BCHUSDT","ATOMUSDT","NEARUSDT","UNIUSDT","APTUSDT","ARBUSDT",
-"OPUSDT","INJUSDT","IMXUSDT","RNDRUSDT","FETUSDT","GALAUSDT",
+trades = 0
+wins = 0
+losses = 0
+
+# ===== Adaptive Parameters =====
+entry_threshold = 0.004
+take_profit = 0.012
+stop_loss = 0.008
+
+MIN_THRESHOLD = 0.001
+MAX_THRESHOLD = 0.02
+MIN_TP = 0.006
+MAX_TP = 0.03
+MIN_SL = 0.004
+MAX_SL = 0.02
+
+MAX_DRAWDOWN = 0.15
+risk_per_trade = 0.10
+
+peak_equity = START_BALANCE
+paused = False
+
+TOP_35 = [
+"BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
+"ADAUSDT","DOGEUSDT","AVAXUSDT","LINKUSDT","MATICUSDT",
+"TRXUSDT","DOTUSDT","LTCUSDT","BCHUSDT","ATOMUSDT",
+"NEARUSDT","UNIUSDT","APTUSDT","ARBUSDT","OPUSDT",
+"INJUSDT","IMXUSDT","RNDRUSDT","FETUSDT","GALAUSDT",
 "SUIUSDT","SEIUSDT","TIAUSDT","PYTHUSDT","ORDIUSDT",
 "AAVEUSDT","ICPUSDT","FILUSDT","ETCUSDT","XLMUSDT"
 ]
 
-balance = START_BALANCE
-positions = {}
-price_history = {s: [] for s in SYMBOLS}
-
-wins = 0
-losses = 0
-trades = 0
-
-entry_threshold = 0.004
-take_profit = 0.015
-stop_loss = 0.01
-
-
-# ================= PRICE FETCH =================
+# ==============================
+# PRICE FETCH
+# ==============================
 
 def get_prices():
     try:
-        coins = ",".join([s.replace("USDT","") for s in SYMBOLS])
-        url = f"https://min-api.cryptocompare.com/data/pricemulti?fsyms={coins}&tsyms=USDT"
-        r = requests.get(url, timeout=10)
-        data = r.json()
-
-        prices = {}
-        for s in SYMBOLS:
-            coin = s.replace("USDT","")
-            if coin in data and "USDT" in data[coin]:
-                prices[s] = float(data[coin]["USDT"])
+        url = "https://api.binance.com/api/v3/ticker/price"
+        data = requests.get(url, timeout=5).json()
+        prices = {item['symbol']: float(item['price']) for item in data if item['symbol'] in TOP_35}
         return prices
     except:
         return {}
 
-
-# ================= SCORING =================
+# ==============================
+# SCORING
+# ==============================
 
 def calculate_scores(prices):
     scores = {}
-    for s in SYMBOLS:
-        history = price_history[s]
+    for symbol, price in prices.items():
+        history = price_history.setdefault(symbol, [])
+        history.append(price)
+        if len(history) > 20:
+            history.pop(0)
+
         if len(history) < 10:
-            scores[s] = 0
+            scores[symbol] = 0
             continue
 
-        past = history[-10]
-        if past == 0:
-            scores[s] = 0
+        if history[-10] == 0:
+            scores[symbol] = 0
             continue
 
-        change = (history[-1] - past) / past
-        scores[s] = round(change, 5)
+        change = (history[-1] - history[-10]) / history[-10]
+        scores[symbol] = change
 
     return scores
 
+# ==============================
+# POSITION SIZE
+# ==============================
 
-# ================= ADAPT =================
+def calculate_position_size(score, cash):
+    confidence = min(score / 0.01, 1)
+    return cash * risk_per_trade * confidence
 
-def adapt():
-    global entry_threshold
+# ==============================
+# VOLATILITY FILTER
+# ==============================
+
+def volatility_filter(history):
+    if len(history) < 5:
+        return False
+    change = abs(history[-1] - history[-5]) / history[-5]
+    return change > 0.05
+
+# ==============================
+# ADAPTIVE LEARNING
+# ==============================
+
+def adapt(total_equity):
+    global entry_threshold, take_profit, stop_loss
+    global peak_equity, paused
+
+    if total_equity > peak_equity:
+        peak_equity = total_equity
+
+    drawdown = (peak_equity - total_equity) / peak_equity
+
+    if drawdown > MAX_DRAWDOWN:
+        paused = True
+        return
+    else:
+        paused = False
+
     if trades < 5:
         return
 
     winrate = wins / trades
-    if winrate < 0.4:
-        entry_threshold *= 0.9
-    elif winrate > 0.6:
-        entry_threshold *= 1.05
 
+    if winrate < 0.45:
+        entry_threshold *= 0.98
+        take_profit *= 0.98
+        stop_loss *= 1.02
+    elif winrate > 0.60:
+        entry_threshold *= 1.02
+        take_profit *= 1.02
+        stop_loss *= 0.98
 
-# ================= TRADER =================
+    entry_threshold = max(MIN_THRESHOLD, min(entry_threshold, MAX_THRESHOLD))
+    take_profit = max(MIN_TP, min(take_profit, MAX_TP))
+    stop_loss = max(MIN_SL, min(stop_loss, MAX_SL))
+
+# ==============================
+# TRADER LOOP
+# ==============================
 
 def trader():
-    global balance, wins, losses, trades
+    global cash, trades, wins, losses
 
     while True:
         prices = get_prices()
@@ -97,185 +152,135 @@ def trader():
             time.sleep(5)
             continue
 
-        for s in prices:
-            price_history[s].append(prices[s])
-            if len(price_history[s]) > 50:
-                price_history[s] = price_history[s][-50:]
-
         scores = calculate_scores(prices)
 
-        # SELL
-        for s in list(positions.keys()):
-            entry = positions[s]["entry"]
-            qty = positions[s]["qty"]
-            current = prices.get(s, entry)
+        total_positions_value = sum(
+            positions[s]['qty'] * prices.get(s, positions[s]['entry'])
+            for s in positions
+        )
 
-            change = (current - entry) / entry
+        total_equity = cash + total_positions_value
+        adapt(total_equity)
 
-            if change >= take_profit or change <= -stop_loss:
-                balance += qty * current
-                trades += 1
-                if change > 0:
-                    wins += 1
-                else:
-                    losses += 1
-                del positions[s]
-
-        # BUY
-        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-
-        for s, score in sorted_scores:
-            if len(positions) >= MAX_POSITIONS:
-                break
-            if s in positions:
+        for symbol in TOP_35:
+            if symbol not in prices:
                 continue
-            if score > entry_threshold and balance > 5:
-                price = prices[s]
-                amount = balance / (MAX_POSITIONS - len(positions))
-                qty = amount / price
 
-                positions[s] = {"entry": price, "qty": qty}
-                balance -= amount
+            price = prices[symbol]
+            history = price_history[symbol]
 
-        adapt()
+            if paused:
+                continue
+
+            if volatility_filter(history):
+                continue
+
+            score = scores.get(symbol, 0)
+
+            # ENTRY
+            if score > entry_threshold and symbol not in positions:
+                position_size = calculate_position_size(score, cash)
+                if position_size > 1:
+                    qty = position_size / price
+                    positions[symbol] = {"entry": price, "qty": qty}
+                    cash -= position_size
+                    trades += 1
+
+            # EXIT
+            if symbol in positions:
+                entry_price = positions[symbol]["entry"]
+                qty = positions[symbol]["qty"]
+
+                change = (price - entry_price) / entry_price
+
+                if change >= take_profit or change <= -stop_loss:
+                    value = qty * price
+                    cash += value
+
+                    if change > 0:
+                        wins += 1
+                    else:
+                        losses += 1
+
+                    del positions[symbol]
+
         time.sleep(5)
 
-
-# ================= DASHBOARD =================
+# ==============================
+# DASHBOARD
+# ==============================
 
 @app.route("/")
 def dashboard():
     prices = get_prices()
-    scores = calculate_scores(prices) if prices else {}
+    scores = calculate_scores(prices)
 
-    # SORT MARKET BY SCORE
-    sorted_market = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    total_positions_value = sum(
+        positions[s]['qty'] * prices.get(s, positions[s]['entry'])
+        for s in positions
+    )
+    total_equity = cash + total_positions_value
 
-    positions_value = 0
-    position_rows = ""
-
-    for s, data in positions.items():
-        current = prices.get(s, data["entry"])
-        value = data["qty"] * current
-        pnl = value - (data["qty"] * data["entry"])
-        positions_value += value
-
-        color = "#00ff88" if pnl >= 0 else "#ff4d4d"
-
-        position_rows += f"""
-        <tr>
-            <td>{s}</td>
-            <td>{round(data['qty'],6)}</td>
-            <td>${data['entry']:.6f}</td>
-            <td>${current:.6f}</td>
-            <td style='color:{color};'>${round(pnl,2)}</td>
-        </tr>
-        """
-
-    total_equity = balance + positions_value
-
-    score_rows = ""
-    for s, score in sorted_market:
-        price = prices.get(s, 0)
-        color = "#00ff88" if score > 0 else "#ff4d4d" if score < 0 else "white"
-
-        score_rows += f"""
-        <tr>
-            <td>{s}</td>
-            <td>${price:.6f}</td>
-            <td style='color:{color};'>{score}</td>
-        </tr>
-        """
-
-    html = f"""
+    html = """
     <html>
     <head>
     <meta http-equiv="refresh" content="5">
     <style>
-    body {{
-        font-family: Arial;
-        background: linear-gradient(135deg,#0f2027,#203a43,#2c5364);
-        color:white;
-        padding:20px;
-    }}
-
-    .card {{
-        background: rgba(255,255,255,0.05);
-        padding:20px;
-        border-radius:12px;
-        margin-bottom:20px;
-    }}
-
-    table {{
-        width:100%;
-        border-collapse: collapse;
-    }}
-
-    th {{
-        text-align:left;
-        border-bottom:1px solid #555;
-        padding:8px 4px;
-    }}
-
-    td {{
-        padding:6px 4px;
-        border-bottom:1px solid #333;
-    }}
-
-    h1 {{
-        color:#ffb347;
-    }}
-
-    .green {{ color:#00ff88; }}
-    .red {{ color:#ff4d4d; }}
-
+    body { background: #0f2027; color: white; font-family: Arial; padding: 20px;}
+    h1 { color: gold; }
+    .card { background: #1c3b45; padding: 20px; margin-bottom: 20px; border-radius: 10px;}
+    table { width: 100%; border-collapse: collapse;}
+    th, td { padding: 8px; border-bottom: 1px solid #333;}
+    .green { color: #00ff99;}
+    .red { color: #ff4d4d;}
     </style>
     </head>
     <body>
-
     <h1>🔥 ELITE TOP-35 ADAPTIVE AI</h1>
 
     <div class="card">
-        <h2>Account</h2>
-        <p>Cash: <b>${balance:.2f}</b></p>
-        <p>Positions Value: <b>${positions_value:.2f}</b></p>
-        <p>Total Equity: <b>${total_equity:.2f}</b></p>
-        <p>Trades: {trades} | Wins: {wins} | Losses: {losses}</p>
-        <p>Entry Threshold: {entry_threshold:.5f}</p>
+    <b>Cash:</b> ${:.2f}<br>
+    <b>Positions Value:</b> ${:.2f}<br>
+    <b>Total Equity:</b> ${:.2f}<br><br>
+    Trades: {} | Wins: {} | Losses: {}<br>
+    Entry Threshold: {:.4f}
     </div>
 
     <div class="card">
-        <h2>Open Positions</h2>
-        <table>
-        <tr>
-            <th>Coin</th>
-            <th>Qty</th>
-            <th>Entry</th>
-            <th>Current</th>
-            <th>P/L</th>
-        </tr>
-        {position_rows if position_rows else "<tr><td colspan=5>None</td></tr>"}
-        </table>
-    </div>
+    <h3>Open Positions</h3>
+    <table>
+    <tr><th>Coin</th><th>Qty</th><th>Entry</th><th>Current</th><th>P/L</th></tr>
+    """.format(
+        cash, total_positions_value, total_equity,
+        trades, wins, losses, entry_threshold
+    )
 
-    <div class="card">
-        <h2>Live Market Scores</h2>
-        <table>
-        <tr>
-            <th>Coin</th>
-            <th>Price</th>
-            <th>Score</th>
-        </tr>
-        {score_rows}
-        </table>
-    </div>
+    if not positions:
+        html += "<tr><td colspan=5>None</td></tr>"
+    else:
+        for s, data in positions.items():
+            current = prices.get(s, data["entry"])
+            pnl = (current - data["entry"]) / data["entry"]
+            color = "green" if pnl > 0 else "red"
+            html += f"<tr><td>{s}</td><td>{data['qty']:.4f}</td><td>${data['entry']:.4f}</td><td>${current:.4f}</td><td class='{color}'>{pnl*100:.2f}%</td></tr>"
 
-    </body>
-    </html>
-    """
+    html += "</table></div>"
 
-    return render_template_string(html)
+    html += "<div class='card'><h3>Live Market Scores</h3><table><tr><th>Coin</th><th>Price</th><th>Score</th></tr>"
 
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+    for s, score in sorted_scores:
+        price = prices.get(s, 0)
+        html += f"<tr><td>{s}</td><td>${price:.4f}</td><td>{score:.4f}</td></tr>"
+
+    html += "</table></div></body></html>"
+
+    return html
+
+# ==============================
+# START
+# ==============================
 
 threading.Thread(target=trader, daemon=True).start()
 
