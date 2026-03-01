@@ -14,32 +14,32 @@ account = {
 }
 
 # -----------------------------
-# SAFE MARKET FETCH
+# COINGECKO MARKET DATA
 # -----------------------------
-def get_top_35_usdt():
+def get_top_35():
     try:
-        url = "https://api.binance.com/api/v3/ticker/24hr"
-        response = requests.get(url, timeout=10)
+        url = "https://api.coingecko.com/api/v3/coins/markets"
+        params = {
+            "vs_currency": "usd",
+            "order": "market_cap_desc",
+            "per_page": 35,
+            "page": 1,
+            "price_change_percentage": "24h"
+        }
+
+        response = requests.get(url, params=params, timeout=10)
 
         if response.status_code != 200:
             return [], f"HTTP ERROR {response.status_code}"
 
         data = response.json()
 
-        if not isinstance(data, list):
-            return [], f"Unexpected API response: {data}"
-
-        usdt_pairs = [x for x in data if x["symbol"].endswith("USDT")]
-        usdt_pairs.sort(key=lambda x: float(x["quoteVolume"]), reverse=True)
-
-        top_35 = usdt_pairs[:35]
-
         coins = []
-        for coin in top_35:
+        for coin in data:
             coins.append({
-                "symbol": coin["symbol"],
-                "price": float(coin["lastPrice"]),
-                "change": float(coin["priceChangePercent"])
+                "symbol": coin["symbol"].upper(),
+                "price": coin["current_price"],
+                "change": coin.get("price_change_percentage_24h", 0)
             })
 
         return coins, None
@@ -54,7 +54,7 @@ def get_top_35_usdt():
 @app.route("/")
 def dashboard():
 
-    coins, error = get_top_35_usdt()
+    coins, error = get_top_35()
 
     html = """
     <html>
@@ -68,7 +68,7 @@ def dashboard():
     .error { color:#ff6b6b; font-weight:bold;}
     </style>
 
-    <h2>🔥 ELITE AI TRADER v4 DEBUG</h2>
+    <h2>🔥 ELITE AI TRADER v4 (LIVE MARKET)</h2>
 
     {% if error %}
         <div class="card error">
@@ -78,7 +78,7 @@ def dashboard():
     {% endif %}
 
     <div class="card">
-    <h3>Top 35 USDT Pairs</h3>
+    <h3>Top 35 Coins (Live)</h3>
     <table>
     <tr><th>Coin</th><th>Price</th><th>24h %</th></tr>
     {% for c in coins %}
