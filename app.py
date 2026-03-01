@@ -4,10 +4,10 @@ from flask import Flask
 
 app = Flask(__name__)
 
-STARTING_CAPITAL = 50.0
-DEPLOYMENT_RATIO = 0.80
+STARTING_CAPITAL = 10.0
+DEPLOYMENT_RATIO = 0.90
 MAX_POSITIONS = 5
-REBALANCE_COOLDOWN = 300
+REBALANCE_COOLDOWN = 120  # 2 minutes
 
 cash = STARTING_CAPITAL
 positions = {}
@@ -15,34 +15,32 @@ last_rebalance = 0
 total_trades = 0
 
 
-# ================= MARKET (CoinGecko) =================
+# ================= MARKET =================
 def get_market():
     try:
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
             "vs_currency": "usd",
             "order": "price_change_percentage_24h_desc",
-            "per_page": 20,
+            "per_page": MAX_POSITIONS,
             "page": 1
         }
 
         r = requests.get(url, params=params, timeout=10)
-
         if r.status_code != 200:
             return []
 
-        data = r.json()
-        return data[:MAX_POSITIONS]
+        return r.json()
 
     except:
         return []
 
 
-def get_price(symbol):
+def get_price(coin_id):
     try:
         url = "https://api.coingecko.com/api/v3/simple/price"
         params = {
-            "ids": symbol,
+            "ids": coin_id,
             "vs_currencies": "usd"
         }
 
@@ -50,7 +48,7 @@ def get_price(symbol):
         if r.status_code != 200:
             return 0
 
-        return r.json()[symbol]["usd"]
+        return r.json()[coin_id]["usd"]
 
     except:
         return 0
@@ -59,8 +57,8 @@ def get_price(symbol):
 # ================= EQUITY =================
 def current_equity():
     total = cash
-    for symbol, pos in positions.items():
-        price = get_price(symbol)
+    for coin_id, pos in positions.items():
+        price = get_price(coin_id)
         total += pos["qty"] * price
     return total
 
@@ -70,43 +68,30 @@ def rebalance():
     global cash, positions, last_rebalance, total_trades
 
     now = time.time()
-    if now - last_rebalance < REBALANCE_COOLDOWN:
-        return
 
-    equity = current_equity()
-    if equity <= 1:
+    if now - last_rebalance < REBALANCE_COOLDOWN:
         return
 
     market = get_market()
     if not market:
         return
 
-    target_symbols = [coin["id"] for coin in market]
-
-    # SELL old
-    for symbol in list(positions.keys()):
-        if symbol not in target_symbols:
-            price = get_price(symbol)
-            cash += positions[symbol]["qty"] * price
-            del positions[symbol]
-            total_trades += 1
-
     equity = current_equity()
     deploy_capital = equity * DEPLOYMENT_RATIO
-    allocation = deploy_capital / len(target_symbols)
+    allocation = deploy_capital / MAX_POSITIONS
+
+    new_positions = {}
 
     for coin in market:
-        symbol = coin["id"]
+        coin_id = coin["id"]
         price = coin["current_price"]
 
-        if symbol in positions:
-            continue
+        qty = allocation / price
+        new_positions[coin_id] = {"qty": qty}
 
-        if cash >= allocation:
-            qty = allocation / price
-            positions[symbol] = {"qty": qty}
-            cash -= allocation
-            total_trades += 1
+    positions = new_positions
+    cash = equity - deploy_capital
+    total_trades += MAX_POSITIONS
 
     last_rebalance = now
 
@@ -119,15 +104,16 @@ def dashboard():
     equity = current_equity()
     invested = equity - cash
     deployment = (invested / equity * 100) if equity > 0 else 0
+    pnl = equity - STARTING_CAPITAL
 
     rows = ""
-    for symbol, pos in positions.items():
-        price = get_price(symbol)
+    for coin_id, pos in positions.items():
+        price = get_price(coin_id)
         value = pos["qty"] * price
 
         rows += f"""
         <tr>
-            <td>{symbol.upper()}</td>
+            <td>{coin_id.upper()}</td>
             <td>{round(pos["qty"], 6)}</td>
             <td>${round(value, 2)}</td>
         </tr>
@@ -135,15 +121,19 @@ def dashboard():
 
     return f"""
     <html>
+    <head>
+        <meta http-equiv="refresh" content="10">
+    </head>
     <body style="background:#0e1a2b;color:white;font-family:Arial;padding:20px;">
 
-    <h2 style="color:#4fd1c5;">ELITE AI TRADER</h2>
+    <h2 style="color:#4fd1c5;">ELITE AI TRADER (LIVE PAPER MODE)</h2>
 
     <div style="background:#1f2a3c;padding:20px;border-radius:10px;margin-bottom:20px;">
         <b>Market Deployment:</b> {round(deployment,2)}%<br>
         <b>Cash:</b> ${round(cash,2)}<br>
         <b>Invested:</b> ${round(invested,2)}<br>
         <b>Total Equity:</b> ${round(equity,2)}<br>
+        <b>PnL:</b> ${round(pnl,2)}<br>
         <b>Total Trades:</b> {total_trades}
     </div>
 
