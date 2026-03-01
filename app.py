@@ -1,278 +1,199 @@
-import requests
-import time
-import random
 from flask import Flask
+import requests
+import random
+import time
+from datetime import datetime
 
 app = Flask(__name__)
 
-STARTING_BALANCE = 50.0
-cash = STARTING_BALANCE
+START_BALANCE = 50.0
+cash = START_BALANCE
 positions = {}
 trade_history = []
-
-trades = 0
-wins = 0
-losses = 0
 level = 1
+win_count = 0
+loss_count = 0
 
-MIN_HOLD_TIME = 600
-TRADE_COOLDOWN = 180
-CONFIDENCE_THRESHOLD = 0.65
-last_trade_time = 0
+MAX_POSITIONS = 7
+MIN_POSITIONS = 3
 
-
-# ---------------- MARKET ----------------
+def safe_request(url):
+    try:
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            return r.json()
+    except:
+        return None
+    return None
 
 def get_market():
-    try:
-        url = "https://api.coingecko.com/api/v3/coins/markets"
-        params = {
-            "vs_currency": "usd",
-            "order": "market_cap_desc",
-            "per_page": 35,
-            "page": 1,
-            "sparkline": False
-        }
-        r = requests.get(url, params=params, timeout=10)
-        if r.status_code != 200:
-            return []
-        return r.json()
-    except:
+    url = "https://api.binance.com/api/v3/ticker/24hr"
+    data = safe_request(url)
+    if not data:
         return []
 
+    usdt_pairs = [x for x in data if x["symbol"].endswith("USDT")]
+    sorted_pairs = sorted(usdt_pairs, key=lambda x: float(x["quoteVolume"]), reverse=True)
 
-# ---------------- ANALYSIS ----------------
+    top = sorted_pairs[:35]
 
-def analyze_coin(coin):
-    change = coin.get("price_change_percentage_24h") or 0
-    volume = coin.get("total_volume") or 0
+    coins = []
+    for c in top:
+        try:
+            price = float(c["lastPrice"])
+            change = float(c["priceChangePercent"])
+            volume = float(c["quoteVolume"])
+            score = change * 0.6 + (volume / 100000000)
+            coins.append({
+                "symbol": c["symbol"],
+                "price": price,
+                "change": change,
+                "score": score
+            })
+        except:
+            continue
 
-    score = 0
+    coins.sort(key=lambda x: x["score"], reverse=True)
+    return coins
 
-    if change > 2:
-        score += 0.4
-    if change > 5:
-        score += 0.3
-    if volume > 500000000:
-        score += 0.2
+def total_equity(market):
+    total = cash
+    for sym, pos in positions.items():
+        price = next((c["price"] for c in market if c["symbol"] == sym), pos["entry"])
+        total += pos["amount"] * price
+    return total
 
-    score += random.uniform(0, 0.2)
-    return score
-
-
-# ---------------- LEVEL SYSTEM ----------------
-
-def update_level(total_equity):
+def adjust_level(equity):
     global level
-    win_rate = wins / trades if trades > 0 else 0
-
-    if total_equity > 60 and win_rate > 0.55:
+    if equity > 100:
         level = 2
-    if total_equity > 75 and win_rate > 0.6:
+    if equity > 200:
         level = 3
-    if total_equity > 100 and win_rate > 0.65:
+    if equity > 400:
         level = 4
 
+def trade_logic(market):
+    global cash, win_count, loss_count
 
-# ---------------- TRADING ----------------
-
-def trade_logic():
-    global cash, trades, wins, losses, last_trade_time
-
-    market = get_market()
     if not market:
         return
 
-    now = time.time()
+    equity = total_equity(market)
+    adjust_level(equity)
 
-    for coin in market:
-        symbol = coin["symbol"].upper()
-        price = coin["current_price"]
+    desired_positions = min(MAX_POSITIONS, max(MIN_POSITIONS, int(level + 2)))
 
-        if not price or price <= 0:
+    # SELL LOGIC
+    for sym in list(positions.keys()):
+        price = next((c["price"] for c in market if c["symbol"] == sym), None)
+        if not price:
             continue
 
-        # EXIT
-        if symbol in positions:
-            pos = positions[symbol]
-            hold_time = now - pos["entry_time"]
+        entry = positions[sym]["entry"]
+        pnl = (price - entry) / entry * 100
 
-            if hold_time < MIN_HOLD_TIME:
-                continue
+        if pnl <= -4 or pnl >= 6:
+            amount = positions[sym]["amount"]
+            cash += amount * price
 
-            pnl_percent = (price - pos["entry_price"]) / pos["entry_price"]
-            pnl_dollars = (price - pos["entry_price"]) * pos["amount"]
+            if pnl > 0:
+                win_count += 1
+            else:
+                loss_count += 1
 
-            if pnl_percent > 0.04 or pnl_percent < -0.03:
-                cash += pos["amount"] * price
-                trades += 1
+            trade_history.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "symbol": sym,
+                "pnl": round(pnl, 2)
+            })
 
-                if pnl_percent > 0:
-                    wins += 1
-                else:
-                    losses += 1
+            del positions[sym]
 
-                trade_history.insert(0, {
-                    "type": "SELL",
-                    "symbol": symbol,
-                    "entry": pos["entry_price"],
-                    "exit": price,
-                    "profit_dollar": pnl_dollars,
-                    "profit_percent": pnl_percent * 100,
-                    "time": time.strftime("%H:%M:%S")
-                })
-
-                del positions[symbol]
-                last_trade_time = now
-
-        # ENTRY
-        else:
-            if now - last_trade_time < TRADE_COOLDOWN:
-                continue
-
-            confidence = analyze_coin(coin)
-
-            if confidence > CONFIDENCE_THRESHOLD and cash > 5:
-                allocation = 0.1 * level
-                size = cash * allocation
-                amount = size / price
-
-                positions[symbol] = {
-                    "entry_price": price,
-                    "amount": amount,
-                    "entry_time": now,
-                    "invested": size
+    # BUY LOGIC
+    open_slots = desired_positions - len(positions)
+    if open_slots > 0 and cash > 5:
+        for coin in market:
+            if coin["symbol"] not in positions:
+                allocation = (cash / open_slots) * (1 + level * 0.1)
+                if allocation > cash:
+                    allocation = cash
+                amount = allocation / coin["price"]
+                positions[coin["symbol"]] = {
+                    "entry": coin["price"],
+                    "amount": amount
                 }
-
-                cash -= size
-                last_trade_time = now
-
-                trade_history.insert(0, {
-                    "type": "BUY",
-                    "symbol": symbol,
-                    "entry": price,
-                    "exit": "-",
-                    "profit_dollar": 0,
-                    "profit_percent": 0,
-                    "time": time.strftime("%H:%M:%S")
-                })
-
-
-# ---------------- DASHBOARD ----------------
+                cash -= allocation
+                open_slots -= 1
+                if open_slots <= 0:
+                    break
 
 @app.route("/")
 def dashboard():
-    global cash
-
-    trade_logic()
-
     market = get_market()
-    price_lookup = {c["symbol"].upper(): c["current_price"] for c in market}
+    trade_logic(market)
 
-    total_positions_value = 0
-    rows = ""
+    equity = total_equity(market)
 
-    for symbol, pos in positions.items():
-        current_price = price_lookup.get(symbol, 0)
-        invested = pos["invested"]
-        value = pos["amount"] * current_price
-        pnl_percent = ((current_price - pos["entry_price"]) / pos["entry_price"]) * 100
-        total_positions_value += value
-
-        color = "#00ff88" if pnl_percent >= 0 else "#ff4d4d"
-
-        rows += f"""
-        <tr>
-            <td>{symbol}</td>
-            <td>${invested:.2f}</td>
-            <td>${pos['entry_price']:.4f}</td>
-            <td>${current_price:.4f}</td>
-            <td>${value:.2f}</td>
-            <td style="color:{color}">{pnl_percent:.2f}%</td>
-        </tr>
-        """
-
-    total_equity = cash + total_positions_value
-    update_level(total_equity)
-    win_rate = round((wins / trades) * 100, 2) if trades > 0 else 0
-
-    history_rows = ""
-    for trade in trade_history[:20]:
-        color = "#00ff88" if trade["profit_percent"] >= 0 else "#ff4d4d"
-        history_rows += f"""
-        <tr>
-            <td>{trade['time']}</td>
-            <td>{trade['type']}</td>
-            <td>{trade['symbol']}</td>
-            <td>${trade['entry']}</td>
-            <td>${trade['exit']}</td>
-            <td style="color:{color}">${trade['profit_dollar']:.2f}</td>
-            <td style="color:{color}">{trade['profit_percent']:.2f}%</td>
-        </tr>
-        """
-
-    return f"""
+    html = """
     <html>
     <head>
-        <title>Elite AI Trader</title>
-        <style>
-            body {{ background:#0f1117; color:white; font-family:Arial; padding:20px; }}
-            h1 {{ color:#00ffcc; }}
-            table {{ width:100%; border-collapse:collapse; margin-top:20px; }}
-            th, td {{ padding:8px; text-align:center; border-bottom:1px solid #333; }}
-            th {{ background:#1a1d26; color:#00ffcc; }}
-            tr:hover {{ background:#1f2330; }}
-            .card {{ background:#1a1d26; padding:15px; margin:10px 0; border-radius:8px; }}
-        </style>
+    <meta http-equiv="refresh" content="15">
+    <style>
+        body { background:#0f172a; color:white; font-family:Arial; }
+        table { width:100%; border-collapse:collapse; }
+        th, td { padding:8px; text-align:center; }
+        th { background:#1e293b; }
+        tr:nth-child(even) { background:#1e293b; }
+        .green { color:#22c55e; }
+        .red { color:#ef4444; }
+        .card { background:#1e293b; padding:15px; margin:10px 0; border-radius:8px; }
+    </style>
     </head>
     <body>
-        <h1>🚀 Elite AI Trader</h1>
+    <h1>🔥 ELITE AI TRADER – LIVE SIM</h1>
 
-        <div class="card">
-            <b>Cash:</b> ${cash:.2f} |
-            <b>Positions:</b> ${total_positions_value:.2f} |
-            <b>Total Equity:</b> ${total_equity:.2f}
-        </div>
+    <div class="card">
+        <h2>Account</h2>
+        <p>Level: """ + str(level) + """</p>
+        <p>Cash: $""" + str(round(cash,2)) + """</p>
+        <p>Total Equity: $""" + str(round(equity,2)) + """</p>
+        <p>Wins: """ + str(win_count) + """ | Losses: """ + str(loss_count) + """</p>
+    </div>
 
-        <div class="card">
-            <b>Level:</b> {level} |
-            <b>Trades:</b> {trades} |
-            <b>Wins:</b> {wins} |
-            <b>Losses:</b> {losses} |
-            <b>Win Rate:</b> {win_rate}%
-        </div>
-
+    <div class="card">
         <h2>Open Positions</h2>
         <table>
-            <tr>
-                <th>Coin</th>
-                <th>$ Invested</th>
-                <th>Entry</th>
-                <th>Current</th>
-                <th>Value</th>
-                <th>PnL %</th>
-            </tr>
-            {rows}
-        </table>
+        <tr><th>Coin</th><th>Entry</th><th>Current</th><th>$ Value</th></tr>
+    """
 
-        <h2>Trade History (Last 20)</h2>
-        <table>
-            <tr>
-                <th>Time</th>
-                <th>Type</th>
-                <th>Coin</th>
-                <th>Entry</th>
-                <th>Exit</th>
-                <th>Profit $</th>
-                <th>Profit %</th>
-            </tr>
-            {history_rows}
+    for sym, pos in positions.items():
+        current = next((c["price"] for c in market if c["symbol"] == sym), pos["entry"])
+        value = pos["amount"] * current
+        html += f"<tr><td>{sym}</td><td>{round(pos['entry'],4)}</td><td>{round(current,4)}</td><td>${round(value,2)}</td></tr>"
+
+    html += """
         </table>
+    </div>
+
+    <div class="card">
+        <h2>Trade History</h2>
+        <table>
+        <tr><th>Time</th><th>Coin</th><th>PNL %</th></tr>
+    """
+
+    for t in reversed(trade_history[-10:]):
+        color = "green" if t["pnl"] > 0 else "red"
+        html += f"<tr><td>{t['time']}</td><td>{t['symbol']}</td><td class='{color}'>{t['pnl']}%</td></tr>"
+
+    html += """
+        </table>
+    </div>
 
     </body>
     </html>
     """
 
+    return html
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
