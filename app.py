@@ -1,246 +1,222 @@
 from flask import Flask, render_template_string
 import requests
-import threading
+import random
 import time
-from datetime import datetime
 
 app = Flask(__name__)
 
-# ==============================
+# =============================
 # CONFIG
-# ==============================
+# =============================
 
 STARTING_CASH = 50
 TOP_COINS = 35
-MAX_HOLDINGS = 7
-LEVEL_UP_EVERY = 25  # $ profit milestone
+MAX_POSITIONS = 7
+TRADE_SIZE_PERCENT = 0.15
+LEVEL_UP_EQUITY = 60  # level up at $60, then scales
 
-# ==============================
-# ACCOUNT STATE
-# ==============================
+# =============================
+# STATE
+# =============================
 
-account = {
+state = {
     "cash": STARTING_CASH,
-    "level": 1,
+    "portfolio": {},  # symbol -> {entry, qty}
+    "history": [],
     "wins": 0,
     "losses": 0,
-    "trades": 0
+    "trades": 0,
+    "level": 1,
+    "xp": 0,
+    "last_update": 0
 }
 
-portfolio = {}  # symbol: {entry, amount}
-trade_history = []
-last_market = []
-
-# ==============================
-# MARKET FETCH
-# ==============================
+# =============================
+# MARKET DATA (CoinGecko)
+# =============================
 
 def get_market():
     try:
-        response = requests.get(
-            "https://api.binance.com/api/v3/ticker/24hr",
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/coins/markets",
+            params={
+                "vs_currency": "usd",
+                "order": "volume_desc",
+                "per_page": TOP_COINS,
+                "page": 1,
+                "price_change_percentage": "24h"
+            },
             timeout=15
         )
 
-        if response.status_code != 200:
-            return []
-
-        data = response.json()
-
-        usdt_pairs = [
-            x for x in data
-            if x["symbol"].endswith("USDT")
-            and not any(bad in x["symbol"] for bad in ["UP", "DOWN", "BULL", "BEAR"])
-        ]
-
-        sorted_pairs = sorted(
-            usdt_pairs,
-            key=lambda x: float(x["quoteVolume"]),
-            reverse=True
-        )
+        data = r.json()
 
         coins = []
+        for c in data:
+            price = float(c["current_price"])
+            change = float(c["price_change_percentage_24h"] or 0)
+            volume = float(c["total_volume"])
 
-        for coin in sorted_pairs[:TOP_COINS]:
-            try:
-                price = float(coin["lastPrice"])
-                change = float(coin["priceChangePercent"])
-                volume = float(coin["quoteVolume"])
+            score = 0
 
-                score = 0
-                if change > 0: score += 1
-                if change > 2: score += 1
-                if change > 4: score += 1
-                if volume > 100_000_000: score += 1
+            # Momentum
+            if change > 0:
+                score += 2
+            if change > 3:
+                score += 2
+            if change < -3:
+                score -= 2
 
-                coins.append({
-                    "symbol": coin["symbol"],
-                    "price": price,
-                    "change": change,
-                    "volume": volume,
-                    "score": score
-                })
-            except:
-                continue
+            # Volume strength
+            if volume > 50_000_000:
+                score += 1
 
+            # Small randomness for "AI personality"
+            score += random.uniform(-0.5, 0.5)
+
+            coins.append({
+                "symbol": c["symbol"].upper(),
+                "name": c["name"],
+                "price": price,
+                "change": change,
+                "score": round(score, 2)
+            })
+
+        coins.sort(key=lambda x: x["score"], reverse=True)
         return coins
 
-    except:
+    except Exception as e:
+        print("MARKET ERROR:", e)
         return []
 
-# ==============================
+# =============================
 # TRADING LOGIC
-# ==============================
+# =============================
 
-def total_equity():
-    total = account["cash"]
-    for symbol, data in portfolio.items():
-        market_price = next((c["price"] for c in last_market if c["symbol"] == symbol), data["entry"])
-        total += data["amount"] * market_price
-    return round(total, 2)
+def simulate_trading(market):
 
-def level_up_check():
-    profit = total_equity() - STARTING_CASH
-    new_level = int(profit // LEVEL_UP_EVERY) + 1
-    account["level"] = max(1, new_level)
-
-def trade():
-    global last_market
-
-    market = get_market()
     if not market:
         return
 
-    last_market = market
-    level_up_check()
-
-    aggression = min(0.25 + (account["level"] * 0.02), 0.6)
-
-    # SELL LOGIC
-    for symbol in list(portfolio.keys()):
+    # ===== SELL LOGIC =====
+    for symbol in list(state["portfolio"].keys()):
         coin = next((c for c in market if c["symbol"] == symbol), None)
         if not coin:
             continue
 
-        entry = portfolio[symbol]["entry"]
-        current = coin["price"]
-        change = ((current - entry) / entry) * 100
+        entry = state["portfolio"][symbol]["entry"]
+        qty = state["portfolio"][symbol]["qty"]
+        current_price = coin["price"]
 
-        # Adaptive exit
-        if change > 4 + account["level"] or change < -5:
-            amount = portfolio[symbol]["amount"]
-            account["cash"] += amount * current
+        pnl_percent = (current_price - entry) / entry * 100
 
-            if change > 0:
-                account["wins"] += 1
-            else:
-                account["losses"] += 1
+        # take profit
+        if pnl_percent > 5:
+            sell(symbol, current_price, qty)
 
-            trade_history.insert(0, f"{datetime.now().strftime('%H:%M:%S')} SELL {symbol} {round(change,2)}%")
-            del portfolio[symbol]
-            account["trades"] += 1
+        # stop loss
+        elif pnl_percent < -5:
+            sell(symbol, current_price, qty)
 
-    # BUY LOGIC
-    sorted_market = sorted(market, key=lambda x: x["score"], reverse=True)
+    # ===== BUY LOGIC =====
+    if len(state["portfolio"]) >= MAX_POSITIONS:
+        return
 
-    for coin in sorted_market:
-        if len(portfolio) >= MAX_HOLDINGS:
-            break
-
-        if coin["symbol"] in portfolio:
+    for coin in market[:10]:  # only top 10 scored
+        if coin["symbol"] in state["portfolio"]:
             continue
 
-        if coin["score"] >= 3:
-            allocation = account["cash"] * aggression / (MAX_HOLDINGS - len(portfolio))
-            if allocation <= 1:
-                continue
+        if coin["score"] > 2 and state["cash"] > 5:
+            buy(coin["symbol"], coin["price"])
+            break
 
-            amount = allocation / coin["price"]
-            account["cash"] -= allocation
 
-            portfolio[coin["symbol"]] = {
-                "entry": coin["price"],
-                "amount": amount
-            }
+def buy(symbol, price):
+    allocation = state["cash"] * TRADE_SIZE_PERCENT
+    qty = allocation / price
 
-            trade_history.insert(0, f"{datetime.now().strftime('%H:%M:%S')} BUY {coin['symbol']}")
-            account["trades"] += 1
+    state["cash"] -= allocation
+    state["portfolio"][symbol] = {
+        "entry": price,
+        "qty": qty
+    }
 
-# ==============================
-# BACKGROUND LOOP
-# ==============================
+    state["history"].insert(0, f"BUY {symbol} @ ${round(price,4)}")
+    state["trades"] += 1
 
-def trader_loop():
-    while True:
-        trade()
-        time.sleep(20)
 
-threading.Thread(target=trader_loop, daemon=True).start()
+def sell(symbol, price, qty):
+    entry = state["portfolio"][symbol]["entry"]
+    value = qty * price
+    cost = qty * entry
 
-# ==============================
-# DASHBOARD UI
-# ==============================
+    profit = value - cost
+
+    state["cash"] += value
+    del state["portfolio"][symbol]
+
+    if profit > 0:
+        state["wins"] += 1
+        state["xp"] += 10
+    else:
+        state["losses"] += 1
+        state["xp"] += 3
+
+    state["history"].insert(0, f"SELL {symbol} @ ${round(price,4)} | P/L ${round(profit,2)}")
+    state["trades"] += 1
+
+
+# =============================
+# LEVEL SYSTEM
+# =============================
+
+def check_level_up(total_equity):
+    required = LEVEL_UP_EQUITY + (state["level"] - 1) * 20
+
+    if total_equity >= required:
+        state["level"] += 1
+        state["history"].insert(0, f"LEVEL UP! Now Level {state['level']}")
+
+
+# =============================
+# DASHBOARD
+# =============================
 
 @app.route("/")
 def dashboard():
-    equity = total_equity()
 
-    portfolio_rows = ""
-    for symbol, data in portfolio.items():
-        current_price = next((c["price"] for c in last_market if c["symbol"] == symbol), data["entry"])
-        value = round(current_price * data["amount"], 2)
-        portfolio_rows += f"""
-        <tr>
-            <td>{symbol}</td>
-            <td>${round(data['entry'],4)}</td>
-            <td>${round(current_price,4)}</td>
-            <td>${value}</td>
-        </tr>
-        """
+    now = time.time()
+    if now - state["last_update"] > 20:  # trade every 20 seconds
+        market = get_market()
+        simulate_trading(market)
+        state["last_update"] = now
+    else:
+        market = get_market()
 
-    market_rows = ""
-    for coin in last_market:
-        market_rows += f"""
-        <tr>
-            <td>{coin['symbol']}</td>
-            <td>${round(coin['price'],4)}</td>
-            <td>{round(coin['change'],2)}%</td>
-            <td>{coin['score']}</td>
-        </tr>
-        """
+    # calculate total equity
+    invested_value = 0
+    for symbol, pos in state["portfolio"].items():
+        coin = next((c for c in market if c["symbol"] == symbol), None)
+        if coin:
+            invested_value += pos["qty"] * coin["price"]
 
-    trade_rows = ""
-    for t in trade_history[:15]:
-        trade_rows += f"<p>{t}</p>"
+    total_equity = state["cash"] + invested_value
 
-    return render_template_string(f"""
+    check_level_up(total_equity)
+
+    # HTML
+    html = """
     <html>
     <head>
     <title>ELITE AI TRADER</title>
+    <meta http-equiv="refresh" content="10">
     <style>
-        body {{
-            background: #0f172a;
-            color: white;
-            font-family: Arial;
-            padding: 30px;
-        }}
-        .card {{
-            background: #1e293b;
-            padding: 20px;
-            margin-bottom: 20px;
-            border-radius: 10px;
-        }}
-        table {{
-            width: 100%;
-            border-collapse: collapse;
-        }}
-        th, td {{
-            padding: 8px;
-            text-align: left;
-        }}
-        th {{
-            color: #38bdf8;
-        }}
+        body {background:#0b1220;color:white;font-family:Arial;padding:20px}
+        h1 {color:#7df9ff}
+        .card {background:#1a2238;padding:20px;margin-bottom:20px;border-radius:10px}
+        table {width:100%}
+        th {text-align:left;color:#7df9ff}
+        td {padding:4px}
     </style>
     </head>
     <body>
@@ -248,47 +224,68 @@ def dashboard():
     <h1>🤖 ELITE AI TRADER</h1>
 
     <div class="card">
-        <h2>Account</h2>
-        <p>Level: {account['level']}</p>
-        <p>Cash: ${round(account['cash'],2)}</p>
-        <p>Total Equity: ${equity}</p>
-        <p>Wins: {account['wins']} | Losses: {account['losses']} | Trades: {account['trades']}</p>
+    <b>Level:</b> {{level}}<br>
+    <b>Cash:</b> ${{cash}}<br>
+    <b>Total Equity:</b> ${{equity}}<br>
+    <b>Wins:</b> {{wins}} | <b>Losses:</b> {{losses}} | <b>Trades:</b> {{trades}}
     </div>
 
     <div class="card">
-        <h2>Portfolio (0-7 Coins)</h2>
-        <table>
-            <tr>
-                <th>Coin</th>
-                <th>Entry</th>
-                <th>Current</th>
-                <th>$ Value</th>
-            </tr>
-            {portfolio_rows}
-        </table>
+    <h3>Portfolio (0-7 Coins)</h3>
+    <table>
+    <tr><th>Coin</th><th>Entry</th><th>Current</th><th>$ Value</th></tr>
+    {% for symbol, pos in portfolio.items() %}
+        {% set coin = market|selectattr("symbol","equalto",symbol)|first %}
+        {% if coin %}
+        <tr>
+        <td>{{symbol}}</td>
+        <td>${{pos.entry}}</td>
+        <td>${{coin.price}}</td>
+        <td>${{(pos.qty * coin.price)|round(2)}}</td>
+        </tr>
+        {% endif %}
+    {% endfor %}
+    </table>
     </div>
 
     <div class="card">
-        <h2>Top 35 Market</h2>
-        <table>
-            <tr>
-                <th>Coin</th>
-                <th>Price</th>
-                <th>24h %</th>
-                <th>Score</th>
-            </tr>
-            {market_rows}
-        </table>
+    <h3>Top 35 Market</h3>
+    <table>
+    <tr><th>Coin</th><th>Price</th><th>24h %</th><th>Score</th></tr>
+    {% for c in market %}
+    <tr>
+    <td>{{c.symbol}}</td>
+    <td>${{c.price}}</td>
+    <td>{{c.change}}%</td>
+    <td>{{c.score}}</td>
+    </tr>
+    {% endfor %}
+    </table>
     </div>
 
     <div class="card">
-        <h2>Trade History</h2>
-        {trade_rows}
+    <h3>Trade History</h3>
+    {% for h in history[:15] %}
+        {{h}}<br>
+    {% endfor %}
     </div>
 
     </body>
     </html>
-    """)
+    """
+
+    return render_template_string(
+        html,
+        level=state["level"],
+        cash=round(state["cash"],2),
+        equity=round(total_equity,2),
+        wins=state["wins"],
+        losses=state["losses"],
+        trades=state["trades"],
+        portfolio=state["portfolio"],
+        market=market,
+        history=state["history"]
+    )
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run()
