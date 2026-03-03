@@ -9,40 +9,26 @@ app = Flask(__name__)
 STARTING_CASH = 50
 STRATEGY_COUNT = 30
 MAX_POSITIONS = 7
-REFRESH_SECONDS = 20
+REFRESH_SECONDS = 15
 
-# ---------------- STRATEGY CLASS ----------------
+# ---------------- STRATEGY ----------------
 class Strategy:
     def __init__(self, id):
         self.id = id
         self.cash = STARTING_CASH
         self.portfolio = {}
         self.entry = {}
+        self.entry_time = {}
         self.wins = 0
         self.losses = 0
-        self.aggression = random.uniform(1.2, 2.5)
-        self.confidence = random.uniform(1.0, 2.0)
-        self.xp = 0
-        self.level = 1
+        self.aggression = random.uniform(1.5, 3.0)
         self.equity = STARTING_CASH
-
-    def score(self, change):
-        volatility_boost = abs(change) * 0.5
-        randomness = random.uniform(-2, 2)
-        intelligence = self.level * 0.6
-        return (change * self.aggression) + volatility_boost + intelligence + randomness
-
-    def mutate(self):
-        # random mutation over time
-        if random.random() < 0.15:
-            self.aggression += random.uniform(-0.2, 0.3)
-            self.aggression = max(0.8, min(3.5, self.aggression))
 
     def trade(self, market):
 
-        self.mutate()
+        now = time.time()
 
-        # SELL FAST
+        # ----- SELL FAST (SCALP) -----
         for symbol in list(self.portfolio.keys()):
             coin = next((c for c in market if c["symbol"] == symbol), None)
             if not coin:
@@ -53,11 +39,15 @@ class Strategy:
             current_price = coin["price"]
 
             pnl_percent = ((current_price - entry_price) / entry_price) * 100
+            hold_time = now - self.entry_time[symbol]
 
-            take_profit = 4 * self.aggression
-            stop_loss = -4 * self.aggression
+            # ultra tight scalp exits
+            take_profit = 1.5
+            stop_loss = -1.5
 
-            if pnl_percent >= take_profit or pnl_percent <= stop_loss:
+            # also force exit after 3 minutes
+            if pnl_percent >= take_profit or pnl_percent <= stop_loss or hold_time > 180:
+
                 value = qty * current_price
                 pnl = value - (qty * entry_price)
 
@@ -70,32 +60,28 @@ class Strategy:
 
                 del self.portfolio[symbol]
                 del self.entry[symbol]
-                self.xp += 1
+                del self.entry_time[symbol]
 
-        # BUY HARD
-        for coin in market[:20]:
+        # ----- BUY AGGRESSIVELY -----
+        for coin in market[:15]:
 
             if len(self.portfolio) >= MAX_POSITIONS:
                 break
 
             if coin["symbol"] not in self.portfolio:
-                score = self.score(coin["change"])
 
-                if score > (2.5 * self.confidence):
+                # lower threshold massively
+                if coin["change"] > -1:
 
-                    invest_percent = 0.30 * self.aggression
+                    invest_percent = 0.35 * self.aggression
                     invest_amount = self.cash * invest_percent
 
                     if invest_amount > 5:
                         qty = invest_amount / coin["price"]
                         self.portfolio[coin["symbol"]] = qty
                         self.entry[coin["symbol"]] = coin["price"]
+                        self.entry_time[coin["symbol"]] = now
                         self.cash -= invest_amount
-                        self.xp += 1
-
-        if self.xp >= self.level * 4:
-            self.xp = 0
-            self.level += 1
 
     def update_equity(self, market):
         total_positions = 0
@@ -103,6 +89,7 @@ class Strategy:
             coin = next((c for c in market if c["symbol"] == symbol), None)
             if coin:
                 total_positions += qty * coin["price"]
+
         self.equity = self.cash + total_positions
 
 # ---------------- MARKET ----------------
@@ -140,8 +127,8 @@ strategies = [Strategy(i+1) for i in range(STRATEGY_COUNT)]
 # ---------------- DASHBOARD ----------------
 @app.route("/")
 def dashboard():
-    market = get_market()
 
+    market = get_market()
     if not market:
         return "Market loading..."
 
@@ -158,32 +145,28 @@ def dashboard():
     <meta http-equiv="refresh" content="{REFRESH_SECONDS}">
     <style>
     body {{
-        background:#020617;
-        color:white;
-        font-family:Arial;
-        padding:25px;
+        background:#000;
+        color:#0f0;
+        font-family:monospace;
+        padding:20px;
     }}
-    h1 {{ color:#ef4444; }}
     table {{
         width:100%;
         border-collapse:collapse;
     }}
     th, td {{
-        padding:8px;
-        border-bottom:1px solid #334155;
+        padding:6px;
+        border-bottom:1px solid #222;
     }}
-    .gold {{ color:gold; }}
     </style>
     </head>
     <body>
 
-    <h1>🔥 ULTRA AGGRESSIVE AI ARENA</h1>
+    <h1>⚡ ULTRA SCALP ARENA ⚡</h1>
 
-    <h2 class="gold">🏆 Best Strategy: #{best.id}</h2>
+    <h2>🏆 Best Strategy #{best.id}</h2>
     <h3>Equity: ${round(best.equity,2)}</h3>
     <h3>Wins: {best.wins} | Losses: {best.losses}</h3>
-    <h3>Level: {best.level}</h3>
-    <h3>Aggression: {round(best.aggression,2)}</h3>
 
     <h2>All Strategies</h2>
     <table>
@@ -192,8 +175,7 @@ def dashboard():
         <th>Equity</th>
         <th>Wins</th>
         <th>Losses</th>
-        <th>Level</th>
-        <th>Aggression</th>
+        <th>Open Positions</th>
     </tr>
     """
 
@@ -204,13 +186,11 @@ def dashboard():
             <td>${round(strat.equity,2)}</td>
             <td>{strat.wins}</td>
             <td>{strat.losses}</td>
-            <td>{strat.level}</td>
-            <td>{round(strat.aggression,2)}</td>
+            <td>{len(strat.portfolio)}</td>
         </tr>
         """
 
     html += "</table></body></html>"
-
     return html
 
 # ---------------- RUN ----------------
