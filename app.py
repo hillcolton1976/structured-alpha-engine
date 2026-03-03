@@ -9,8 +9,8 @@ from collections import deque
 app = Flask(__name__)
 
 START_BALANCE = 50.0
-PRICE_REFRESH = 5
-HISTORY_LENGTH = 12   # shorter so it starts fast
+PRICE_REFRESH = 10
+HISTORY_LENGTH = 12
 
 price_data = {}
 price_history = {}
@@ -29,7 +29,6 @@ class TradingBot:
         self.positions = {}
         self.wins = 0
         self.losses = 0
-        self.aggressive = aggressive
 
         if aggressive:
             self.entry_threshold = random.uniform(0.03, 0.05)
@@ -43,7 +42,8 @@ class TradingBot:
             self.position_size = random.uniform(0.20, 0.35)
 
     def evaluate(self):
-        for coin in active_coins:
+        for coin in list(active_coins):
+
             if coin not in price_history:
                 continue
             if len(price_history[coin]) < 5:
@@ -51,8 +51,8 @@ class TradingBot:
 
             prices = list(price_history[coin])
             current = prices[-1]
-            mean_price = statistics.mean(prices)
-            deviation = (current - mean_price) / mean_price
+            avg = statistics.mean(prices)
+            deviation = (current - avg) / avg
 
             # ENTRY
             if coin not in self.positions:
@@ -82,7 +82,7 @@ class TradingBot:
 
 
 # =========================
-# MARKET DATA
+# MARKET FETCH (SAFE)
 # =========================
 
 def fetch_market():
@@ -101,22 +101,35 @@ def fetch_market():
                 timeout=10
             )
 
+            if r.status_code != 200:
+                print("Bad status:", r.status_code)
+                time.sleep(PRICE_REFRESH)
+                continue
+
             data = r.json()
 
+            if not isinstance(data, list) or len(data) == 0:
+                print("Empty response")
+                time.sleep(PRICE_REFRESH)
+                continue
+
             with lock:
-                active_coins.clear()
+                new_coins = []
 
                 for coin in data:
                     symbol = coin["symbol"].upper()
                     price = coin["current_price"]
 
-                    active_coins.append(symbol)
+                    new_coins.append(symbol)
                     price_data[symbol] = price
 
                     if symbol not in price_history:
                         price_history[symbol] = deque(maxlen=HISTORY_LENGTH)
 
                     price_history[symbol].append(price)
+
+                # Only replace if we got valid data
+                active_coins[:] = new_coins
 
         except Exception as e:
             print("API error:", e)
@@ -154,7 +167,7 @@ def dashboard():
     return render_template_string("""
     <html>
     <head>
-        <title>Live Trading Engine</title>
+        <title>Elite Adaptive Trading Engine</title>
         <meta http-equiv="refresh" content="5">
         <style>
             body { background:#0e1117; color:white; font-family:Arial; padding:20px; }
@@ -165,7 +178,7 @@ def dashboard():
         </style>
     </head>
     <body>
-        <h1>Live Trading Engine</h1>
+        <h1>Elite Adaptive Trading Engine</h1>
 
         <h2>Active Coins</h2>
         <table>
