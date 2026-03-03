@@ -1,30 +1,26 @@
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, render_template_string
 import threading
 import requests
 import time
 import statistics
 import random
 from collections import deque
-import math
 
 app = Flask(__name__)
 
 START_BALANCE = 50.0
-BOT_COUNT = 8
-ROTATION_INTERVAL = 300  # 5 minutes
-PRICE_REFRESH = 15
+PRICE_REFRESH = 5
+HISTORY_LENGTH = 12   # shorter so it starts fast
 
 price_data = {}
-coin_scores = {}
-active_coins = []
 price_history = {}
-volume_history = {}
+active_coins = []
 lock = threading.Lock()
 
 
-# ============================
-# Bot Class
-# ============================
+# =========================
+# BOT
+# =========================
 
 class TradingBot:
     def __init__(self, name, aggressive=False):
@@ -36,71 +32,58 @@ class TradingBot:
         self.aggressive = aggressive
 
         if aggressive:
-            self.entry_threshold = random.uniform(0.04, 0.06)
-            self.take_profit = random.uniform(0.06, 0.10)
-            self.stop_loss = random.uniform(0.03, 0.06)
-            self.position_size = random.uniform(0.35, 0.60)
+            self.entry_threshold = random.uniform(0.03, 0.05)
+            self.take_profit = random.uniform(0.05, 0.08)
+            self.stop_loss = random.uniform(0.03, 0.05)
+            self.position_size = random.uniform(0.40, 0.60)
         else:
-            self.entry_threshold = random.uniform(0.02, 0.03)
-            self.take_profit = random.uniform(0.03, 0.04)
-            self.stop_loss = random.uniform(0.015, 0.025)
-            self.position_size = random.uniform(0.20, 0.30)
+            self.entry_threshold = random.uniform(0.015, 0.03)
+            self.take_profit = random.uniform(0.02, 0.04)
+            self.stop_loss = random.uniform(0.015, 0.03)
+            self.position_size = random.uniform(0.20, 0.35)
 
     def evaluate(self):
         for coin in active_coins:
-            if coin not in price_history or len(price_history[coin]) < 20:
+            if coin not in price_history:
+                continue
+            if len(price_history[coin]) < 5:
                 continue
 
             prices = list(price_history[coin])
-            current_price = prices[-1]
+            current = prices[-1]
             mean_price = statistics.mean(prices)
-            deviation = (current_price - mean_price) / mean_price
+            deviation = (current - mean_price) / mean_price
 
-            # Entry
+            # ENTRY
             if coin not in self.positions:
                 if deviation <= -self.entry_threshold:
                     allocation = self.balance * self.position_size
                     if allocation > 1:
                         self.balance -= allocation
                         self.positions[coin] = {
-                            "entry": current_price,
-                            "amount": allocation / current_price
+                            "entry": current,
+                            "amount": allocation / current
                         }
 
-            # Exit
+            # EXIT
             else:
                 entry = self.positions[coin]["entry"]
-                change = (current_price - entry) / entry
+                change = (current - entry) / entry
 
                 if change >= self.take_profit:
-                    self.balance += self.positions[coin]["amount"] * current_price
+                    self.balance += self.positions[coin]["amount"] * current
                     self.wins += 1
                     del self.positions[coin]
 
                 elif change <= -self.stop_loss:
-                    self.balance += self.positions[coin]["amount"] * current_price
+                    self.balance += self.positions[coin]["amount"] * current
                     self.losses += 1
                     del self.positions[coin]
 
-    def adapt(self):
-        total_trades = self.wins + self.losses
-        if total_trades < 3:
-            return
 
-        win_rate = self.wins / total_trades
-
-        if win_rate > 0.6:
-            self.position_size = min(self.position_size * 1.05, 0.75)
-            self.take_profit *= 1.05
-        elif win_rate < 0.4:
-            self.position_size = max(self.position_size * 0.90, 0.10)
-            self.stop_loss *= 0.95
-            self.entry_threshold *= 0.95
-
-
-# ============================
-# Market Data Engine
-# ============================
+# =========================
+# MARKET DATA
+# =========================
 
 def fetch_market():
     global active_coins
@@ -112,72 +95,38 @@ def fetch_market():
                 params={
                     "vs_currency": "usd",
                     "order": "market_cap_desc",
-                    "per_page": 100,
+                    "per_page": 20,
                     "page": 1,
                 },
                 timeout=10
             )
+
             data = r.json()
 
             with lock:
+                active_coins.clear()
+
                 for coin in data:
                     symbol = coin["symbol"].upper()
                     price = coin["current_price"]
-                    volume = coin["total_volume"]
 
-                    if symbol not in price_history:
-                        price_history[symbol] = deque(maxlen=50)
-                        volume_history[symbol] = deque(maxlen=50)
-
-                    price_history[symbol].append(price)
-                    volume_history[symbol].append(volume)
+                    active_coins.append(symbol)
                     price_data[symbol] = price
 
-                score_coins()
+                    if symbol not in price_history:
+                        price_history[symbol] = deque(maxlen=HISTORY_LENGTH)
 
-        except:
-            pass
+                    price_history[symbol].append(price)
+
+        except Exception as e:
+            print("API error:", e)
 
         time.sleep(PRICE_REFRESH)
 
 
-def score_coins():
-    global active_coins
-
-    scores = {}
-
-    for symbol in price_history:
-        if len(price_history[symbol]) < 20:
-            continue
-
-        prices = list(price_history[symbol])
-        volumes = list(volume_history[symbol])
-
-        returns = [(prices[i] - prices[i - 1]) / prices[i - 1]
-                   for i in range(1, len(prices))]
-
-        volatility = statistics.stdev(returns) if len(returns) > 2 else 0
-        momentum = (prices[-1] - prices[0]) / prices[0]
-        slope = (prices[-1] - prices[-5]) / prices[-5] if len(prices) > 5 else 0
-        volume_expansion = volumes[-1] / (statistics.mean(volumes) + 1)
-
-        score = (
-            0.30 * volatility +
-            0.30 * momentum +
-            0.20 * slope +
-            0.20 * volume_expansion
-        )
-
-        scores[symbol] = score
-
-    sorted_coins = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    active_coins = [c[0] for c in sorted_coins[:30]]
-    coin_scores.update(scores)
-
-
-# ============================
-# Bot Engine Loop
-# ============================
+# =========================
+# BOT LOOP
+# =========================
 
 bots = []
 
@@ -189,31 +138,24 @@ for i in range(4):
 
 
 def bot_loop():
-    last_adapt = time.time()
-
     while True:
         with lock:
             for bot in bots:
                 bot.evaluate()
-
-        if time.time() - last_adapt > ROTATION_INTERVAL:
-            for bot in bots:
-                bot.adapt()
-            last_adapt = time.time()
-
         time.sleep(2)
 
 
-# ============================
-# Dashboard
-# ============================
+# =========================
+# DASHBOARD
+# =========================
 
 @app.route("/")
 def dashboard():
     return render_template_string("""
     <html>
     <head>
-        <title>Elite Adaptive Trading Engine</title>
+        <title>Live Trading Engine</title>
+        <meta http-equiv="refresh" content="5">
         <style>
             body { background:#0e1117; color:white; font-family:Arial; padding:20px; }
             table { border-collapse:collapse; width:100%; margin-bottom:20px; }
@@ -223,20 +165,18 @@ def dashboard():
         </style>
     </head>
     <body>
-        <h1>Elite Adaptive Trading Engine</h1>
+        <h1>Live Trading Engine</h1>
 
         <h2>Active Coins</h2>
         <table>
             <tr>
                 <th>Symbol</th>
                 <th>Price</th>
-                <th>Score</th>
             </tr>
             {% for coin in coins %}
             <tr>
                 <td>{{ coin }}</td>
                 <td>${{ prices.get(coin, 0) }}</td>
-                <td>{{ "%.4f"|format(scores.get(coin, 0)) }}</td>
             </tr>
             {% endfor %}
         </table>
@@ -253,22 +193,21 @@ def dashboard():
             Size: {{ "%.2f"|format(bot.position_size*100) }}%<br>
             Holdings:
             {% for c in bot.positions %}
-                {{ c }} 
+                {{ c }}
             {% endfor %}
         </div>
         {% endfor %}
     </body>
     </html>
-    """, bots=bots, coins=active_coins, prices=price_data, scores=coin_scores)
+    """, bots=bots, coins=active_coins, prices=price_data)
 
 
-# ============================
-# Start Threads
-# ============================
+# =========================
+# START
+# =========================
 
 threading.Thread(target=fetch_market, daemon=True).start()
 threading.Thread(target=bot_loop, daemon=True).start()
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
