@@ -98,6 +98,7 @@ class TradingBot:
         self.positions[coin] = {
             "entry": price,
             "qty": qty
+} 
     def exit(self, coin, price):
         position = self.positions.pop(coin)
         entry = position["entry"]
