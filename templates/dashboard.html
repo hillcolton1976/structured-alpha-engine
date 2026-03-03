@@ -1,20 +1,115 @@
-@app.route("/")
-def dashboard():
-    current_price = get_price()
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Trading Bot Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: white;
+            margin: 0;
+            padding: 20px;
+        }
 
-    # Prevent crash if API fails
-    if current_price is None:
-        current_price = 0
+        .top-bar {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
 
-    total_equity = sum(
-        bot.cash + (bot.coins * current_price)
-        for bot in bots
-    )
+        .top-bar h1 {
+            margin: 0 0 10px 0;
+        }
 
-    return render_template(
-        "dashboard.html",
-        bots=bots,
-        total_equity=round(total_equity, 2),
-        current_price=current_price,
-        symbol=SYMBOL
-    )
+        .stats {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .stat-box {
+            background: #334155;
+            padding: 15px;
+            border-radius: 8px;
+            min-width: 180px;
+        }
+
+        .bots {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+        }
+
+        .bot-card {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 10px;
+        }
+
+        .bot-card h3 {
+            margin-top: 0;
+        }
+
+        .profit {
+            color: #22c55e;
+        }
+
+        .loss {
+            color: #ef4444;
+        }
+    </style>
+</head>
+<body>
+
+<div class="top-bar">
+    <h1>🚀 Aggressive Trading Bots</h1>
+
+    <div class="stats">
+        <div class="stat-box">
+            <strong>Symbol</strong><br>
+            {{ symbol }}
+        </div>
+
+        <div class="stat-box">
+            <strong>Live Price</strong><br>
+            ${{ current_price | default(0) | round(4) }}
+        </div>
+
+        <div class="stat-box">
+            <strong>Total Portfolio Value</strong><br>
+            ${{ total_equity | default(0) | round(2) }}
+        </div>
+    </div>
+</div>
+
+<div class="bots">
+    {% for bot in bots %}
+    <div class="bot-card">
+        <h3>{{ bot.name }}</h3>
+
+        <p><strong>Cash:</strong> ${{ bot.cash | round(2) }}</p>
+        <p><strong>Coins:</strong> {{ bot.coins | round(6) }}</p>
+
+        <p><strong>Holdings Value:</strong>
+            ${{ (bot.coins * (current_price or 0)) | round(2) }}
+        </p>
+
+        <p><strong>Total Bot Value:</strong>
+            ${{ (bot.cash + (bot.coins * (current_price or 0))) | round(2) }}
+        </p>
+
+        <p><strong>Trades:</strong> {{ bot.trades }}</p>
+
+        {% if bot.profit >= 0 %}
+            <p class="profit"><strong>P/L:</strong> ${{ bot.profit | round(2) }}</p>
+        {% else %}
+            <p class="loss"><strong>P/L:</strong> ${{ bot.profit | round(2) }}</p>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+
+</body>
+</html>
