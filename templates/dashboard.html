@@ -1,115 +1,22 @@
-return f"""
 <!DOCTYPE html>
 <html>
 <head>
     <title>ELITE AI TRADER</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-
-        body {{
-            background: linear-gradient(135deg, #0f172a, #0a0f1f);
-            color: white;
-            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-            padding: 20px;
-        }}
-
-        h1 {{
-            font-size: 22px;
-            margin-bottom: 20px;
-        }}
-
-        .card {{
-            background: #1e293b;
-            padding: 18px;
-            border-radius: 16px;
-            margin-bottom: 18px;
-            box-shadow: 0 8px 25px rgba(0,0,0,0.3);
-        }}
-
-        .equity {{
-            font-size: 20px;
-            font-weight: bold;
-        }}
-
-        table {{
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-        }}
-
-        th {{
-            text-align: left;
-            padding-bottom: 8px;
-            color: #94a3b8;
-        }}
-
-        td {{
-            padding: 8px 0;
-            border-bottom: 1px solid #334155;
-        }}
-
-        .green {{
-            color: #22c55e;
-        }}
-
-        .red {{
-            color: #ef4444;
-        }}
-
-        .small {{
-            font-size: 12px;
-            color: #94a3b8;
-        }}
-
-    </style>
 </head>
+<body style="background:#0f172a;color:white;font-family:sans-serif;padding:20px;">
 
-<body>
+<h1>Elite AI Trader</h1>
 
-<h1>🔥 ELITE AI TRADER</h1>
+<h2>Total Equity: ${{ total_equity }}</h2>
 
-<div class="card">
-    <h3>Account</h3>
-    <p>Cash: ${cash:.2f}</p>
-    <p>Positions Value: ${total_positions_value:.2f}</p>
-    <p class="equity">Total Equity: ${total_equity:.2f}</p>
-    <p class="small">Unrealized P/L: ${total_unrealized:.2f}</p>
+{% for bot in bots %}
+<div style="background:#1e293b;padding:15px;margin-bottom:15px;border-radius:12px;">
+    <p><strong>Strategy:</strong> {{ bot.strategy }}</p>
+    <p>Capital: ${{ bot.capital }}</p>
+    <p>PnL: ${{ bot.pnl }}</p>
+    <p>Trades: {{ bot.trades }}</p>
 </div>
-
-<div class="card">
-    <h3>Performance</h3>
-    <p>Trades: {trades}</p>
-    <p>Wins: <span class="green">{wins}</span></p>
-    <p>Losses: <span class="red">{losses}</span></p>
-    <p>Adaptive Threshold: {entry_threshold:.4f}</p>
-</div>
-
-<div class="card">
-    <h3>Open Positions</h3>
-    <table>
-        <tr>
-            <th>Coin</th>
-            <th>Qty</th>
-            <th>Entry</th>
-            <th>Value</th>
-            <th>P/L</th>
-        </tr>
-        {position_rows}
-    </table>
-</div>
-
-<div class="card">
-    <h3>Top 35 USDT Pairs</h3>
-    <table>
-        <tr>
-            <th>Coin</th>
-            <th>Price</th>
-            <th>24h %</th>
-        </tr>
-        {rows}
-    </table>
-</div>
+{% endfor %}
 
 </body>
 </html>
-"""
