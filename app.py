@@ -7,9 +7,9 @@ app = Flask(__name__)
 
 # ---------------- CONFIG ----------------
 STARTING_CASH = 50
-STRATEGY_COUNT = 25   # change to 100 if hosting can handle it
-MAX_POSITIONS = 5
-REFRESH_SECONDS = 30
+STRATEGY_COUNT = 30
+MAX_POSITIONS = 7
+REFRESH_SECONDS = 20
 
 # ---------------- STRATEGY CLASS ----------------
 class Strategy:
@@ -20,41 +20,29 @@ class Strategy:
         self.entry = {}
         self.wins = 0
         self.losses = 0
-        self.aggression = random.uniform(0.8, 1.8)
-        self.confidence = random.uniform(0.8, 1.5)
+        self.aggression = random.uniform(1.2, 2.5)
+        self.confidence = random.uniform(1.0, 2.0)
         self.xp = 0
         self.level = 1
         self.equity = STARTING_CASH
 
     def score(self, change):
-        intelligence = self.level * 0.4
-        randomness = random.uniform(-1, 1.2)
-        return (change * self.aggression) + intelligence + randomness
+        volatility_boost = abs(change) * 0.5
+        randomness = random.uniform(-2, 2)
+        intelligence = self.level * 0.6
+        return (change * self.aggression) + volatility_boost + intelligence + randomness
 
-    def update_learning(self):
-        total = self.wins + self.losses
-        if total == 0:
-            return
-
-        winrate = self.wins / total
-
-        if winrate > 0.6:
-            self.aggression = min(2.5, self.aggression + 0.05)
-            self.confidence += 0.05
-        elif winrate < 0.4:
-            self.aggression = max(0.6, self.aggression - 0.05)
-            self.confidence = max(0.6, self.confidence - 0.05)
-
-    def level_up(self):
-        if self.xp >= self.level * 5:
-            self.xp = 0
-            self.level += 1
+    def mutate(self):
+        # random mutation over time
+        if random.random() < 0.15:
+            self.aggression += random.uniform(-0.2, 0.3)
+            self.aggression = max(0.8, min(3.5, self.aggression))
 
     def trade(self, market):
 
-        self.update_learning()
+        self.mutate()
 
-        # SELL
+        # SELL FAST
         for symbol in list(self.portfolio.keys()):
             coin = next((c for c in market if c["symbol"] == symbol), None)
             if not coin:
@@ -66,8 +54,8 @@ class Strategy:
 
             pnl_percent = ((current_price - entry_price) / entry_price) * 100
 
-            take_profit = 6 * self.aggression
-            stop_loss = -5 * self.aggression
+            take_profit = 4 * self.aggression
+            stop_loss = -4 * self.aggression
 
             if pnl_percent >= take_profit or pnl_percent <= stop_loss:
                 value = qty * current_price
@@ -84,22 +72,30 @@ class Strategy:
                 del self.entry[symbol]
                 self.xp += 1
 
-        # BUY
-        for coin in market[:10]:
+        # BUY HARD
+        for coin in market[:20]:
+
             if len(self.portfolio) >= MAX_POSITIONS:
                 break
 
             if coin["symbol"] not in self.portfolio:
-                if self.score(coin["change"]) > (3 * self.confidence):
-                    invest = self.cash * (0.15 * self.aggression)
-                    if invest > 5:
-                        qty = invest / coin["price"]
+                score = self.score(coin["change"])
+
+                if score > (2.5 * self.confidence):
+
+                    invest_percent = 0.30 * self.aggression
+                    invest_amount = self.cash * invest_percent
+
+                    if invest_amount > 5:
+                        qty = invest_amount / coin["price"]
                         self.portfolio[coin["symbol"]] = qty
                         self.entry[coin["symbol"]] = coin["price"]
-                        self.cash -= invest
+                        self.cash -= invest_amount
                         self.xp += 1
 
-        self.level_up()
+        if self.xp >= self.level * 4:
+            self.xp = 0
+            self.level += 1
 
     def update_equity(self, market):
         total_positions = 0
@@ -138,7 +134,7 @@ def get_market():
     except:
         return []
 
-# ---------------- INIT STRATEGIES ----------------
+# ---------------- INIT ----------------
 strategies = [Strategy(i+1) for i in range(STRATEGY_COUNT)]
 
 # ---------------- DASHBOARD ----------------
@@ -149,12 +145,10 @@ def dashboard():
     if not market:
         return "Market loading..."
 
-    # Run all strategies
     for strat in strategies:
         strat.trade(market)
         strat.update_equity(market)
 
-    # Sort by performance
     ranked = sorted(strategies, key=lambda x: x.equity, reverse=True)
     best = ranked[0]
 
@@ -164,12 +158,12 @@ def dashboard():
     <meta http-equiv="refresh" content="{REFRESH_SECONDS}">
     <style>
     body {{
-        background:#0f172a;
+        background:#020617;
         color:white;
         font-family:Arial;
         padding:25px;
     }}
-    h1 {{ color:#22d3ee; }}
+    h1 {{ color:#ef4444; }}
     table {{
         width:100%;
         border-collapse:collapse;
@@ -183,14 +177,15 @@ def dashboard():
     </head>
     <body>
 
-    <h1>🧠 AI STRATEGY ARENA</h1>
+    <h1>🔥 ULTRA AGGRESSIVE AI ARENA</h1>
 
     <h2 class="gold">🏆 Best Strategy: #{best.id}</h2>
     <h3>Equity: ${round(best.equity,2)}</h3>
     <h3>Wins: {best.wins} | Losses: {best.losses}</h3>
     <h3>Level: {best.level}</h3>
+    <h3>Aggression: {round(best.aggression,2)}</h3>
 
-    <h2>📊 All Strategies</h2>
+    <h2>All Strategies</h2>
     <table>
     <tr>
         <th>ID</th>
