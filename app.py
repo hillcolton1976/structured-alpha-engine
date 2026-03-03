@@ -1,7 +1,6 @@
 from flask import Flask, jsonify, render_template_string
 import threading
-import websocket
-import json
+import requests
 import random
 import time
 
@@ -26,23 +25,24 @@ def bot_loop():
             bot.update()
         time.sleep(5)
 
-def on_message(ws, message):
+def price_loop():
     global btc_price
-    data = json.loads(message)
-    btc_price = float(data["p"])
-
-def start_ws():
-    ws = websocket.WebSocketApp(
-        "wss://stream.binance.com:9443/ws/btcusdt@trade",
-        on_message=on_message
-    )
-    ws.run_forever()
+    while True:
+        try:
+            r = requests.get(
+                "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
+                timeout=5
+            )
+            btc_price = float(r.json()["price"])
+        except:
+            pass
+        time.sleep(1)
 
 for i in range(4):
     bots.append(TradingBot(f"Bot {i+1}"))
 
 threading.Thread(target=bot_loop, daemon=True).start()
-threading.Thread(target=start_ws, daemon=True).start()
+threading.Thread(target=price_loop, daemon=True).start()
 
 @app.route("/")
 def dashboard():
