@@ -1,133 +1,240 @@
 from flask import Flask, jsonify, render_template_string
 import threading
 import requests
-import random
 import time
+import random
 
 app = Flask(__name__)
 
 START_BALANCE = 50.0
-btc_price = None
+MAX_POSITIONS = 5
+
+market_data = {}
+price_history = {}
 bots = []
 
-# ---------------------------
-# Trading Bot Class
-# ---------------------------
+# -------------------------
+# MARKET ENGINE
+# -------------------------
+
+def fetch_top_30():
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": 30,
+        "page": 1
+    }
+    r = requests.get(url, params=params, timeout=10)
+    data = r.json()
+    return [coin["id"] for coin in data]
+
+
+def market_loop():
+    global market_data
+    coins = fetch_top_30()
+
+    while True:
+        try:
+            ids = ",".join(coins)
+            r = requests.get(
+                f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd",
+                timeout=10
+            )
+            prices = r.json()
+
+            for coin in coins:
+                if coin in prices:
+                    price = prices[coin]["usd"]
+                    market_data[coin] = price
+
+                    if coin not in price_history:
+                        price_history[coin] = []
+
+                    price_history[coin].append(price)
+
+                    if len(price_history[coin]) > 50:
+                        price_history[coin].pop(0)
+
+        except:
+            pass
+
+        time.sleep(5)
+
+# -------------------------
+# BOT ENGINE
+# -------------------------
 
 class TradingBot:
-    def __init__(self, name):
+
+    def __init__(self, name, risk_profile):
         self.name = name
+        self.risk = risk_profile
         self.balance = START_BALANCE
-        self.learning_bias = random.uniform(0.8, 1.2)
+        self.positions = {}
+        self.wins = 0
+        self.losses = 0
 
-    def update(self):
-        # Simple simulated learning drift
-        self.learning_bias *= random.uniform(0.999, 1.001)
+        if risk_profile == "conservative":
+            self.base_risk = 0.12
+        else:
+            self.base_risk = 0.35
 
+        self.dip_threshold = 0.03
+        self.take_profit = 0.02
 
-# ---------------------------
-# Background Bot Loop
-# ---------------------------
+    def equity(self):
+        total = self.balance
+        for coin, entry in self.positions.items():
+            if coin in market_data:
+                total += entry["size"] * market_data[coin]
+        return total
+
+    def trade(self):
+
+        for coin, prices in price_history.items():
+
+            if len(prices) < 10:
+                continue
+
+            current = prices[-1]
+            recent_high = max(prices)
+            recent_low = min(prices)
+
+            # --- BUY DIP ---
+            if coin not in self.positions and len(self.positions) < MAX_POSITIONS:
+
+                drop_pct = (recent_high - current) / recent_high
+
+                if drop_pct >= self.dip_threshold:
+
+                    size_usd = self.balance * self.base_risk
+                    if size_usd <= 1:
+                        continue
+
+                    quantity = size_usd / current
+                    self.balance -= size_usd
+
+                    self.positions[coin] = {
+                        "entry": current,
+                        "size": quantity
+                    }
+
+            # --- SELL ---
+            if coin in self.positions:
+
+                entry_price = self.positions[coin]["entry"]
+                change_pct = (current - entry_price) / entry_price
+
+                if change_pct >= self.take_profit or change_pct <= -self.dip_threshold:
+
+                    size = self.positions[coin]["size"]
+                    self.balance += size * current
+
+                    if change_pct > 0:
+                        self.wins += 1
+                        self.dip_threshold *= 0.98
+                    else:
+                        self.losses += 1
+                        self.dip_threshold *= 1.02
+
+                    del self.positions[coin]
+
 
 def bot_loop():
     while True:
         for bot in bots:
-            bot.update()
-        time.sleep(5)
+            bot.trade()
+        time.sleep(3)
 
-
-# ---------------------------
-# BTC Price Polling (CoinGecko)
-# ---------------------------
-
-def price_loop():
-    global btc_price
-    while True:
-        try:
-            r = requests.get(
-                "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
-                timeout=5
-            )
-            btc_price = r.json()["bitcoin"]["usd"]
-        except:
-            pass
-        time.sleep(2)
-
-
-# ---------------------------
-# Initialize Bots
-# ---------------------------
+# -------------------------
+# INITIALIZE 8 BOTS
+# -------------------------
 
 for i in range(4):
-    bots.append(TradingBot(f"Bot {i+1}"))
+    bots.append(TradingBot(f"Conservative {i+1}", "conservative"))
 
+for i in range(4):
+    bots.append(TradingBot(f"Aggressive {i+1}", "aggressive"))
+
+threading.Thread(target=market_loop, daemon=True).start()
 threading.Thread(target=bot_loop, daemon=True).start()
-threading.Thread(target=price_loop, daemon=True).start()
 
-
-# ---------------------------
-# Dashboard Route
-# ---------------------------
+# -------------------------
+# DASHBOARD
+# -------------------------
 
 @app.route("/")
 def dashboard():
+
+    leaderboard = sorted(bots, key=lambda b: b.equity(), reverse=True)
+
     return render_template_string("""
     <html>
     <head>
-        <title>Structured Alpha Engine</title>
         <style>
-            body { background:#0f1117; color:white; font-family:Arial; padding:20px; }
-            .price { font-size:48px; font-weight:bold; margin-bottom:20px; }
-            .bot { border:1px solid #222; padding:15px; margin-top:15px; border-radius:8px; }
+            body { background:#0f1117; color:white; font-family:Arial; padding:20px;}
+            table { width:100%; border-collapse:collapse; }
+            th, td { padding:8px; border-bottom:1px solid #222; text-align:left;}
         </style>
     </head>
     <body>
 
-        <h1>🚀 Structured Alpha Engine</h1>
+        <h1>🚀 8 Bot Adaptive Trading Engine</h1>
 
-        <h2>BTC/USD Live</h2>
-        <div id="btc" class="price">$Loading...</div>
+        <h2>Top 30 Live Prices</h2>
+        <div id="prices"></div>
 
-        <h2>Trading Bots</h2>
-        {% for bot in bots %}
-        <div class="bot">
-            <h3>{{ bot.name }}</h3>
-            <p>Balance: ${{ "%.2f"|format(bot.balance) }}</p>
-            <p>Learning Bias: {{ "%.3f"|format(bot.learning_bias) }}</p>
-        </div>
-        {% endfor %}
+        <h2>Bot Leaderboard</h2>
+        <table>
+            <tr>
+                <th>Name</th>
+                <th>Risk</th>
+                <th>Balance</th>
+                <th>Equity</th>
+                <th>Wins</th>
+                <th>Losses</th>
+                <th>Open Positions</th>
+            </tr>
+            {% for bot in leaderboard %}
+            <tr>
+                <td>{{ bot.name }}</td>
+                <td>{{ bot.risk }}</td>
+                <td>${{ "%.2f"|format(bot.balance) }}</td>
+                <td>${{ "%.2f"|format(bot.equity()) }}</td>
+                <td>{{ bot.wins }}</td>
+                <td>{{ bot.losses }}</td>
+                <td>{{ bot.positions|length }}</td>
+            </tr>
+            {% endfor %}
+        </table>
 
         <script>
-            async function updatePrice() {
-                const res = await fetch("/price");
+            async function updatePrices() {
+                const res = await fetch("/prices");
                 const data = await res.json();
-                if (data.price) {
-                    document.getElementById("btc").innerText =
-                        "$" + data.price.toLocaleString();
+                let html = "";
+                for (const coin in data) {
+                    html += coin + ": $" + data[coin] + "<br>";
                 }
+                document.getElementById("prices").innerHTML = html;
             }
 
-            setInterval(updatePrice, 2000);
-            updatePrice();
+            setInterval(updatePrices, 5000);
+            updatePrices();
         </script>
 
     </body>
     </html>
-    """, bots=bots)
+    """, leaderboard=leaderboard)
 
 
-# ---------------------------
-# Price API Endpoint
-# ---------------------------
-
-@app.route("/price")
-def price():
-    return jsonify({"price": btc_price})
+@app.route("/prices")
+def prices():
+    return jsonify(market_data)
 
 
-# ---------------------------
-# Run App
-# ---------------------------
+# -------------------------
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
