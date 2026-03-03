@@ -7,9 +7,59 @@ app = Flask(__name__)
 
 # ---------------- CONFIG ----------------
 STARTING_CASH = 50
-STRATEGY_COUNT = 30
-MAX_POSITIONS = 7
-REFRESH_SECONDS = 15
+STRATEGY_COUNT = 25
+MAX_POSITIONS = 5
+REFRESH_SECONDS = 20
+API_COOLDOWN = 60
+
+# ---------------- MARKET CACHE ----------------
+last_market = []
+last_fetch = 0
+api_status = "OK"
+
+def get_market():
+    global last_market, last_fetch, api_status
+
+    # Only call API once per minute
+    if time.time() - last_fetch < API_COOLDOWN and last_market:
+        return last_market
+
+    try:
+        url = "https://api.coingecko.com/api/v3/coins/markets"
+        params = {
+            "vs_currency": "usd",
+            "order": "volume_desc",
+            "per_page": 35,
+            "page": 1,
+            "sparkline": False,
+            "price_change_percentage": "24h"
+        }
+
+        r = requests.get(url, params=params, timeout=10)
+
+        if r.status_code != 200:
+            api_status = "RATE LIMITED"
+            return last_market
+
+        data = r.json()
+
+        market = []
+        for coin in data:
+            market.append({
+                "symbol": coin["symbol"].upper(),
+                "price": float(coin["current_price"]),
+                "change": float(coin["price_change_percentage_24h"] or 0),
+            })
+
+        last_market = market
+        last_fetch = time.time()
+        api_status = "OK"
+        return market
+
+    except:
+        api_status = "ERROR"
+        return last_market
+
 
 # ---------------- STRATEGY ----------------
 class Strategy:
@@ -21,14 +71,12 @@ class Strategy:
         self.entry_time = {}
         self.wins = 0
         self.losses = 0
-        self.aggression = random.uniform(1.5, 3.0)
         self.equity = STARTING_CASH
 
     def trade(self, market):
-
         now = time.time()
 
-        # ----- SELL FAST (SCALP) -----
+        # SELL FAST
         for symbol in list(self.portfolio.keys()):
             coin = next((c for c in market if c["symbol"] == symbol), None)
             if not coin:
@@ -41,13 +89,7 @@ class Strategy:
             pnl_percent = ((current_price - entry_price) / entry_price) * 100
             hold_time = now - self.entry_time[symbol]
 
-            # ultra tight scalp exits
-            take_profit = 1.5
-            stop_loss = -1.5
-
-            # also force exit after 3 minutes
-            if pnl_percent >= take_profit or pnl_percent <= stop_loss or hold_time > 180:
-
+            if pnl_percent >= 1 or pnl_percent <= -1 or hold_time > 120:
                 value = qty * current_price
                 pnl = value - (qty * entry_price)
 
@@ -62,76 +104,42 @@ class Strategy:
                 del self.entry[symbol]
                 del self.entry_time[symbol]
 
-        # ----- BUY AGGRESSIVELY -----
-        for coin in market[:15]:
-
+        # BUY CONSTANTLY
+        for coin in market[:10]:
             if len(self.portfolio) >= MAX_POSITIONS:
                 break
 
             if coin["symbol"] not in self.portfolio:
+                if coin["change"] > -2:
 
-                # lower threshold massively
-                if coin["change"] > -1:
-
-                    invest_percent = 0.35 * self.aggression
-                    invest_amount = self.cash * invest_percent
-
-                    if invest_amount > 5:
-                        qty = invest_amount / coin["price"]
+                    invest = self.cash * 0.40
+                    if invest > 5:
+                        qty = invest / coin["price"]
                         self.portfolio[coin["symbol"]] = qty
                         self.entry[coin["symbol"]] = coin["price"]
                         self.entry_time[coin["symbol"]] = now
-                        self.cash -= invest_amount
+                        self.cash -= invest
 
     def update_equity(self, market):
-        total_positions = 0
+        total = 0
         for symbol, qty in self.portfolio.items():
             coin = next((c for c in market if c["symbol"] == symbol), None)
             if coin:
-                total_positions += qty * coin["price"]
+                total += qty * coin["price"]
+        self.equity = self.cash + total
 
-        self.equity = self.cash + total_positions
-
-# ---------------- MARKET ----------------
-def get_market():
-    try:
-        url = "https://api.coingecko.com/api/v3/coins/markets"
-        params = {
-            "vs_currency": "usd",
-            "order": "volume_desc",
-            "per_page": 35,
-            "page": 1,
-            "sparkline": False,
-            "price_change_percentage": "24h"
-        }
-
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-
-        market = []
-        for coin in data:
-            market.append({
-                "symbol": coin["symbol"].upper(),
-                "price": float(coin["current_price"]),
-                "change": float(coin["price_change_percentage_24h"] or 0),
-            })
-
-        return market
-
-    except:
-        return []
 
 # ---------------- INIT ----------------
 strategies = [Strategy(i+1) for i in range(STRATEGY_COUNT)]
+
 
 # ---------------- DASHBOARD ----------------
 @app.route("/")
 def dashboard():
 
     market = get_market()
-    if not market:
-        return "Market loading..."
 
+    # Always run even if API fails (uses cache)
     for strat in strategies:
         strat.trade(market)
         strat.update_equity(market)
@@ -162,7 +170,8 @@ def dashboard():
     </head>
     <body>
 
-    <h1>⚡ ULTRA SCALP ARENA ⚡</h1>
+    <h1>⚡ STABLE SCALP ARENA ⚡</h1>
+    <h3>API Status: {api_status}</h3>
 
     <h2>🏆 Best Strategy #{best.id}</h2>
     <h3>Equity: ${round(best.equity,2)}</h3>
@@ -193,6 +202,6 @@ def dashboard():
     html += "</table></body></html>"
     return html
 
-# ---------------- RUN ----------------
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
