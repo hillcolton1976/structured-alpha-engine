@@ -1,119 +1,20 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Live AI Trading Desk</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+@app.route("/")
+def dashboard():
+    current_price = get_price()
 
-    <style>
-        body {
-            background-color: #0f172a;
-            color: #e2e8f0;
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 20px;
-        }
+    # Prevent crash if API fails
+    if current_price is None:
+        current_price = 0
 
-        h1 {
-            text-align: center;
-            margin-bottom: 5px;
-        }
+    total_equity = sum(
+        bot.cash + (bot.coins * current_price)
+        for bot in bots
+    )
 
-        .price {
-            text-align: center;
-            font-size: 18px;
-            margin-bottom: 10px;
-            color: #38bdf8;
-        }
-
-        .equity {
-            text-align: center;
-            font-size: 24px;
-            margin-bottom: 30px;
-            color: #22c55e;
-        }
-
-        .bot-container {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 20px;
-        }
-
-        .bot-card {
-            background: #1e293b;
-            padding: 20px;
-            border-radius: 15px;
-            box-shadow: 0 0 15px rgba(0,0,0,0.4);
-        }
-
-        .bot-card h2 {
-            margin-top: 0;
-            margin-bottom: 15px;
-            color: #facc15;
-        }
-
-        .stat {
-            margin: 6px 0;
-        }
-
-        .positive {
-            color: #22c55e;
-        }
-
-        .negative {
-            color: #ef4444;
-        }
-
-        .neutral {
-            color: #cbd5e1;
-        }
-
-        @media (max-width: 600px) {
-            .equity {
-                font-size: 20px;
-            }
-        }
-    </style>
-</head>
-
-<body>
-
-    <h1>🚀 Live AI Trading Desk</h1>
-
-    <div class="price">
-        {{ symbol }} Price: ${{ current_price | round(2) }}
-    </div>
-
-    <div class="equity">
-        Total Portfolio Equity: ${{ total_equity }}
-    </div>
-
-    <div class="bot-container">
-        {% for bot in bots %}
-        <div class="bot-card">
-            <h2>{{ bot.strategy }}</h2>
-
-            <div class="stat">Cash: ${{ bot.cash | round(2) }}</div>
-            <div class="stat">Coins: {{ bot.coins | round(6) }} BTC</div>
-
-            <div class="stat">
-                Portfolio Value:
-                ${{ (bot.cash + (bot.coins * current_price)) | round(2) }}
-            </div>
-
-            <div class="stat">
-                PnL:
-                <span class="{% if bot.pnl > 0 %}positive{% elif bot.pnl < 0 %}negative{% else %}neutral{% endif %}">
-                    ${{ bot.pnl | round(2) }}
-                </span>
-            </div>
-
-            <div class="stat">Trades: {{ bot.trades }}</div>
-            <div class="stat positive">Wins: {{ bot.wins }}</div>
-            <div class="stat negative">Losses: {{ bot.losses }}</div>
-
-        </div>
-        {% endfor %}
-    </div>
-
-</body>
-</html>
+    return render_template(
+        "dashboard.html",
+        bots=bots,
+        total_equity=round(total_equity, 2),
+        current_price=current_price,
+        symbol=SYMBOL
+    )
