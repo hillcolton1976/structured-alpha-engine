@@ -1,126 +1,114 @@
-import os
-import time
-import uuid
-import pickle
 import random
 import threading
-from datetime import datetime
+import time
 from flask import Flask, render_template
-
-# ==============================
-# Flask App
-# ==============================
 
 app = Flask(__name__)
 
-STATE_FILE = "bots_state.pkl"
-
-# ==============================
-# Base Bot (Independent Learning)
-# ==============================
-
-class BaseBot:
-    def __init__(self, strategy_type, capital=1000):
-        self.id = str(uuid.uuid4())
-        self.strategy_type = strategy_type
+# =========================
+# BOT CLASS
+# =========================
+class TradingBot:
+    def __init__(self, strategy, capital=1000):
+        self.strategy = strategy
         self.capital = capital
         self.pnl = 0
-        self.trade_history = []
-        self.learning_memory = []
-        self.created_at = datetime.utcnow()
+        self.trades = 0
+
+        # Performance tracking
+        self.wins = 0
+        self.losses = 0
+
+        # Learning memory
+        self.memory = []
+        self.aggression = 1.0
 
     def trade(self):
-        # Strategy behavior
-        if self.strategy_type == "scalper":
-            result = random.uniform(-2, 3)
+        """
+        Simulated trade logic.
+        Each strategy behaves slightly differently.
+        """
 
-        elif self.strategy_type == "aggressive":
-            result = random.uniform(-10, 15)
+        base_move = random.uniform(-20, 25)
 
-        elif self.strategy_type == "balanced":
-            result = random.uniform(-5, 7)
+        # Strategy adjustments
+        if self.strategy == "Scalper":
+            base_move *= 0.5
+        elif self.strategy == "Momentum":
+            base_move *= 1.3
+        elif self.strategy == "Mean Reversion":
+            base_move *= 0.8
+        elif self.strategy == "Breakout":
+            base_move *= 1.6
 
+        # Aggression multiplier (learning)
+        profit = base_move * self.aggression
+
+        # Apply trade
+        self.pnl += profit
+        self.capital += profit
+        self.trades += 1
+
+        # Track wins/losses
+        if profit > 0:
+            self.wins += 1
         else:
-            result = random.uniform(-3, 3)
+            self.losses += 1
 
-        self.pnl += result
-        self.capital += result
+        # Learning logic
+        self.memory.append(profit)
 
-        self.trade_history.append(result)
-        self.learning_memory.append({
-            "timestamp": datetime.utcnow(),
-            "result": result
-        })
+        if len(self.memory) > 20:
+            recent_avg = sum(self.memory[-20:]) / 20
 
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "strategy": self.strategy_type,
-            "capital": round(self.capital, 2),
-            "pnl": round(self.pnl, 2),
-            "trades": len(self.trade_history)
-        }
+            # Adjust aggression based on recent performance
+            if recent_avg > 0:
+                self.aggression *= 1.02
+            else:
+                self.aggression *= 0.98
 
-# ==============================
-# Bot Manager
-# ==============================
+            # Prevent runaway growth
+            self.aggression = max(0.5, min(self.aggression, 2.5))
 
-class BotManager:
-    def __init__(self):
-        self.bots = []
 
-    def add_bot(self, strategy):
-        bot = BaseBot(strategy)
-        self.bots.append(bot)
-        self.save_state()
+# =========================
+# CREATE BOTS (Independent)
+# =========================
+bots = [
+    TradingBot("Scalper", 1000),
+    TradingBot("Momentum", 1000),
+    TradingBot("Mean Reversion", 1000),
+    TradingBot("Breakout", 1000),
+]
 
-    def run_all(self):
-        for bot in self.bots:
-            bot.trade()
-        self.save_state()
-
-    def save_state(self):
-        with open(STATE_FILE, "wb") as f:
-            pickle.dump(self.bots, f)
-
-    def load_state(self):
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, "rb") as f:
-                self.bots = pickle.load(f)
-
-manager = BotManager()
-manager.load_state()
-
-# ==============================
-# Auto Create Bots If None Exist
-# ==============================
-
-if not manager.bots:
-    manager.add_bot("scalper")
-    manager.add_bot("aggressive")
-    manager.add_bot("balanced")
-
-# ==============================
-# Background Trading Thread
-# ==============================
-
-def bot_loop():
+# =========================
+# BACKGROUND AUTO TRADING
+# =========================
+def run_trading():
     while True:
-        manager.run_all()
-        time.sleep(5)
+        for bot in bots:
+            bot.trade()
+        time.sleep(5)  # trades every 5 seconds
 
-threading.Thread(target=bot_loop, daemon=True).start()
+trading_thread = threading.Thread(target=run_trading)
+trading_thread.daemon = True
+trading_thread.start()
 
-# ==============================
-# Routes
-# ==============================
-
+# =========================
+# DASHBOARD ROUTE
+# =========================
 @app.route("/")
 def dashboard():
-    bot_data = [bot.to_dict() for bot in manager.bots]
-    total_equity = round(sum(bot.capital for bot in manager.bots), 2)
+    total_equity = sum(bot.capital for bot in bots)
+
     return render_template(
         "dashboard.html",
-        bots=bot_data,
-        total_equity=total_equity
+        bots=bots,
+        total_equity=round(total_equity, 2)
     )
+
+# =========================
+# REQUIRED FOR GUNICORN
+# =========================
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
