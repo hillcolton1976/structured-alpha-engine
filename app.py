@@ -6,17 +6,15 @@ import time
 
 app = Flask(__name__)
 
-# ===== CONFIG =====
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+SYMBOLS = ["BTCUSDT"]
 START_BALANCE = 50.0
-TRADE_PERCENT = 2  # % move required to trade
-TRADE_SIZE = 0.25  # 25% of balance per trade
+TRADE_PERCENT = 2
+TRADE_SIZE = 0.25
 
-# ===== GLOBAL STATE =====
 prices = {}
+last_update = "Loading..."
 bots = []
 
-# ===== BOT CLASS =====
 class TradingBot:
     def __init__(self, name):
         self.name = name
@@ -27,7 +25,6 @@ class TradingBot:
 
     def update(self):
         global prices
-
         for symbol in SYMBOLS:
             if symbol not in prices:
                 continue
@@ -39,107 +36,94 @@ class TradingBot:
                 continue
 
             change = ((current_price - self.last_prices[symbol]) / self.last_prices[symbol]) * 100
+            threshold = TRADE_PERCENT * self.learning_bias
 
-            adjusted_threshold = TRADE_PERCENT * self.learning_bias
-
-            # BUY
-            if change <= -adjusted_threshold and self.balance > 5:
-                amount_to_spend = self.balance * TRADE_SIZE
-                quantity = amount_to_spend / current_price
-                self.balance -= amount_to_spend
-                self.coins[symbol] = self.coins.get(symbol, 0) + quantity
+            if change <= -threshold and self.balance > 5:
+                amount = self.balance * TRADE_SIZE
+                qty = amount / current_price
+                self.balance -= amount
+                self.coins[symbol] = self.coins.get(symbol, 0) + qty
                 self.learning_bias *= 0.99
 
-            # SELL
-            if change >= adjusted_threshold and symbol in self.coins:
-                quantity = self.coins[symbol]
-                self.balance += quantity * current_price
+            if change >= threshold and symbol in self.coins:
+                qty = self.coins[symbol]
+                self.balance += qty * current_price
                 self.coins[symbol] = 0
                 self.learning_bias *= 1.01
 
             self.last_prices[symbol] = current_price
 
-
-# ===== PRICE FETCHER =====
 def fetch_prices():
-    global prices
+    global prices, last_update
     while True:
         try:
-            for symbol in SYMBOLS:
-                url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-                response = requests.get(url, timeout=5)
-                data = response.json()
-                prices[symbol] = float(data["price"])
+            url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+            response = requests.get(url, timeout=5)
+            data = response.json()
+            prices["BTCUSDT"] = float(data["price"])
+            last_update = time.strftime("%H:%M:%S")
         except:
             pass
-
         time.sleep(5)
 
-
-# ===== BOT LOOP =====
 def bot_loop():
     while True:
         for bot in bots:
             bot.update()
         time.sleep(10)
 
-
-# ===== INITIALIZE =====
 for i in range(4):
     bots.append(TradingBot(f"Bot {i+1}"))
 
 threading.Thread(target=fetch_prices, daemon=True).start()
 threading.Thread(target=bot_loop, daemon=True).start()
 
-
-# ===== DASHBOARD =====
 @app.route("/")
 def dashboard():
+    btc_price = prices.get("BTCUSDT", "Loading...")
     return render_template_string("""
     <html>
     <head>
-        <title>Alpha Engine Dashboard</title>
-        <meta http-equiv="refresh" content="10">
+        <title>Alpha Engine</title>
+        <meta http-equiv="refresh" content="5">
         <style>
-            body { font-family: Arial; background: #111; color: white; padding: 20px; }
-            .price { font-size: 18px; margin-bottom: 10px; }
-            .bot { border: 1px solid #333; padding: 15px; margin-bottom: 15px; border-radius: 8px; }
-            h2 { margin-bottom: 5px; }
+            body { background:#111; color:white; font-family:Arial; padding:20px; }
+            .btc { font-size:28px; margin-bottom:20px; }
+            .bot { border:1px solid #333; padding:15px; margin-bottom:15px; border-radius:8px; }
         </style>
     </head>
     <body>
 
         <h1>🚀 Structured Alpha Engine</h1>
 
-        <h2>Live Prices</h2>
-        {% for symbol, price in prices.items() %}
-            <div class="price">{{ symbol }}: ${{ "%.2f"|format(price) }}</div>
-        {% endfor %}
-
-        <hr>
+        <div class="btc">
+            <strong>BTC Live Price:</strong>
+            ${{ btc_price if btc_price == "Loading..." else "%.2f"|format(btc_price) }}
+            <br>
+            <small>Last update: {{ last_update }}</small>
+        </div>
 
         <h2>Trading Bots</h2>
 
         {% for bot in bots %}
-            <div class="bot">
-                <h3>{{ bot.name }}</h3>
-                <p><strong>Balance:</strong> ${{ "%.2f"|format(bot.balance) }}</p>
-                <p><strong>Learning Bias:</strong> {{ "%.3f"|format(bot.learning_bias) }}</p>
-                <p><strong>Holdings:</strong></p>
-                <ul>
-                    {% for coin, qty in bot.coins.items() %}
-                        {% if qty > 0 %}
-                            <li>{{ coin }} - {{ "%.6f"|format(qty) }}</li>
-                        {% endif %}
-                    {% endfor %}
-                </ul>
-            </div>
+        <div class="bot">
+            <h3>{{ bot.name }}</h3>
+            <p>Balance: ${{ "%.2f"|format(bot.balance) }}</p>
+            <p>Learning Bias: {{ "%.3f"|format(bot.learning_bias) }}</p>
+            <p>Holdings:</p>
+            <ul>
+                {% for coin, qty in bot.coins.items() %}
+                    {% if qty > 0 %}
+                        <li>{{ coin }} - {{ "%.6f"|format(qty) }}</li>
+                    {% endif %}
+                {% endfor %}
+            </ul>
+        </div>
         {% endfor %}
 
     </body>
     </html>
-    """, prices=prices, bots=bots)
-
+    """, bots=bots, btc_price=btc_price, last_update=last_update)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
