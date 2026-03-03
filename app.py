@@ -44,13 +44,15 @@ def get_market():
             market.append({
                 "symbol": coin["symbol"].upper(),
                 "price": float(coin["current_price"]),
-                "change": float(coin["price_change_percentage_24h"] or 0),
+                "change": float(coin.get("price_change_percentage_24h") or 0),
             })
 
-        last_market = market
-        last_fetch = time.time()
-        api_status = "OK"
-        return market
+        if market:
+            last_market = market
+            last_fetch = time.time()
+            api_status = "OK"
+
+        return last_market
 
     except:
         api_status = "ERROR"
@@ -74,22 +76,24 @@ class Strategy:
             self.sl = -0.6
             self.size = 0.5
             self.hold = 90
-
         elif mode == "Balanced":
             self.tp = 1.0
             self.sl = -1.0
             self.size = 0.35
             self.hold = 150
-
-        else:  # Momentum
+        else:
             self.tp = 1.2
             self.sl = -0.8
             self.size = 0.4
             self.hold = 180
 
     def trade(self, market):
+        if not market:
+            return
+
         now = time.time()
 
+        # SELL
         for symbol in list(self.portfolio.keys()):
             coin = next((c for c in market if c["symbol"] == symbol), None)
             if not coin:
@@ -115,7 +119,11 @@ class Strategy:
                 del self.entry[symbol]
                 del self.entry_time[symbol]
 
+        # BUY
         if len(self.portfolio) < 3:
+            if len(market) == 0:
+                return
+
             coin = random.choice(market[:15])
 
             if self.mode == "Momentum" and coin["change"] < 0:
@@ -144,75 +152,79 @@ strategies = [Strategy(i + 1, modes[i]) for i in range(STRATEGY_COUNT)]
 
 @app.route("/")
 def dashboard():
-    market = get_market()
+    try:
+        market = get_market()
 
-    for strat in strategies:
-        strat.trade(market)
-        strat.update_equity(market)
+        for strat in strategies:
+            strat.trade(market)
+            strat.update_equity(market)
 
-    ranked = sorted(strategies, key=lambda x: x.equity, reverse=True)
+        ranked = sorted(strategies, key=lambda x: x.equity, reverse=True)
 
-    html = f"""
-    <html>
-    <head>
-    <meta http-equiv="refresh" content="{REFRESH_SECONDS}">
-    <style>
-    body {{
-        background: linear-gradient(135deg,#0f0f0f,#1a1a1a);
-        color: white;
-        font-family: Arial;
-        padding: 30px;
-    }}
-    table {{
-        width:100%;
-        border-collapse:collapse;
-    }}
-    th, td {{
-        padding:10px;
-        text-align:center;
-    }}
-    th {{
-        background:#222;
-    }}
-    tr:nth-child(even) {{
-        background:#181818;
-    }}
-    .profit {{ color:#00ff88; }}
-    .loss {{ color:#ff4444; }}
-    </style>
-    </head>
-    <body>
+        html = f"""
+        <html>
+        <head>
+        <meta http-equiv="refresh" content="{REFRESH_SECONDS}">
+        <style>
+        body {{
+            background:#111;
+            color:white;
+            font-family:Arial;
+            padding:30px;
+        }}
+        table {{
+            width:100%;
+            border-collapse:collapse;
+        }}
+        th, td {{
+            padding:10px;
+            text-align:center;
+        }}
+        th {{
+            background:#222;
+        }}
+        tr:nth-child(even) {{
+            background:#1a1a1a;
+        }}
+        .profit {{ color:#00ff88; }}
+        .loss {{ color:#ff4444; }}
+        </style>
+        </head>
+        <body>
 
-    <h1>⚡ Crypto Strategy Arena ⚡</h1>
-    <h3>API Status: {api_status}</h3>
+        <h1>Crypto Strategy Arena</h1>
+        <h3>API Status: {api_status}</h3>
 
-    <table>
-    <tr>
-        <th>ID</th>
-        <th>Mode</th>
-        <th>Equity</th>
-        <th>Wins</th>
-        <th>Losses</th>
-        <th>Open</th>
-    </tr>
-    """
-
-    for strat in ranked:
-        pnl_class = "profit" if strat.equity >= STARTING_CASH else "loss"
-
-        html += f"""
+        <table>
         <tr>
-            <td>{strat.id}</td>
-            <td>{strat.mode}</td>
-            <td class="{pnl_class}">${round(strat.equity,2)}</td>
-            <td>{strat.wins}</td>
-            <td>{strat.losses}</td>
-            <td>{len(strat.portfolio)}</td>
+            <th>ID</th>
+            <th>Mode</th>
+            <th>Equity</th>
+            <th>Wins</th>
+            <th>Losses</th>
+            <th>Open</th>
         </tr>
         """
 
-    html += "</table></body></html>"
-    return html
+        for strat in ranked:
+            pnl_class = "profit" if strat.equity >= STARTING_CASH else "loss"
+
+            html += f"""
+            <tr>
+                <td>{strat.id}</td>
+                <td>{strat.mode}</td>
+                <td class="{pnl_class}">${round(strat.equity,2)}</td>
+                <td>{strat.wins}</td>
+                <td>{strat.losses}</td>
+                <td>{len(strat.portfolio)}</td>
+            </tr>
+            """
+
+        html += "</table></body></html>"
+        return html
+
+    except Exception as e:
+        return f"App Error: {str(e)}"
 
 
 if __name__ == "__main__":
