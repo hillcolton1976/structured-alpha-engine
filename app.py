@@ -2,226 +2,125 @@ from flask import Flask, render_template_string
 import threading
 import requests
 import time
-import os
 from collections import deque
 
 app = Flask(__name__)
 
 START_BALANCE = 50.0
-PRICE_REFRESH = 6
-HISTORY_LENGTH = 20
+TRADE_SIZE_PERCENT = 0.25   # 25% of balance per trade
+PRICE_REFRESH = 5
+HISTORY = 20
+MOMENTUM_THRESHOLD = 0.003  # 0.3%
 
-price_data = {}
-price_history = {}
-active_coins = []
-last_update_time = "Starting..."
-lock = threading.Lock()
+COINS = [
+    "bitcoin",
+    "ethereum",
+    "solana",
+    "ripple",
+    "dogecoin"
+]
 
+balance = START_BALANCE
+positions = {}  # coin -> dict(type, entry, size)
+price_history = {coin: deque(maxlen=HISTORY) for coin in COINS}
+last_prices = {}
 
-# =========================
-# BOT
-# =========================
+def fetch_prices():
+    global last_prices
+    try:
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(COINS)}&vs_currencies=usd"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        for coin in COINS:
+            if coin in data:
+                price = data[coin]["usd"]
+                last_prices[coin] = price
+                price_history[coin].append(price)
+    except:
+        pass
 
-class TradingBot:
-    def __init__(self, name, aggressive=False):
-        self.name = name
-        self.balance = START_BALANCE
-        self.positions = {}
-        self.wins = 0
-        self.losses = 0
+def get_momentum(coin):
+    hist = price_history[coin]
+    if len(hist) < HISTORY:
+        return 0
+    return (hist[-1] - hist[0]) / hist[0]
 
-        if aggressive:
-            self.entry_threshold = 0.004     # 0.4% breakout
-            self.take_profit = 0.03          # 3% gain
-            self.stop_loss = 0.018           # 1.8% loss
-            self.position_size = 0.60        # 60% capital
-        else:
-            self.entry_threshold = 0.003     # 0.3% breakout
-            self.take_profit = 0.015         # 1.5% gain
-            self.stop_loss = 0.01            # 1% loss
-            self.position_size = 0.35        # 35% capital
-
-    def evaluate(self):
-        for coin in list(active_coins):
-
-            if coin not in price_history:
-                continue
-            if len(price_history[coin]) < 6:
-                continue
-
-            prices = list(price_history[coin])
-            current = prices[-1]
-
-            # ================= ENTRY (BREAKOUT) =================
-            if coin not in self.positions:
-                recent_high = max(prices[:-1])  # exclude current
-                breakout = (current - recent_high) / recent_high
-
-                if breakout >= self.entry_threshold:
-                    allocation = self.balance * self.position_size
-                    if allocation > 1:
-                        self.balance -= allocation
-                        self.positions[coin] = {
-                            "entry": current,
-                            "amount": allocation / current
-                        }
-
-            # ================= EXIT =================
-            else:
-                entry = self.positions[coin]["entry"]
-                change = (current - entry) / entry
-
-                if change >= self.take_profit:
-                    self.balance += self.positions[coin]["amount"] * current
-                    self.wins += 1
-                    del self.positions[coin]
-
-                elif change <= -self.stop_loss:
-                    self.balance += self.positions[coin]["amount"] * current
-                    self.losses += 1
-                    del self.positions[coin]
-
-
-# =========================
-# MARKET FETCH
-# =========================
-
-def fetch_market():
-    global active_coins, last_update_time
+def trade_engine():
+    global balance
 
     while True:
-        try:
-            r = requests.get(
-                "https://api.coingecko.com/api/v3/coins/markets",
-                params={
-                    "vs_currency": "usd",
-                    "order": "volume_desc",
-                    "per_page": 20,
-                    "page": 1,
-                },
-                timeout=10
-            )
+        fetch_prices()
 
-            if r.status_code == 200:
-                data = r.json()
+        for coin in COINS:
+            if coin not in last_prices:
+                continue
 
-                if isinstance(data, list) and len(data) > 0:
-                    with lock:
-                        new_coins = []
+            price = last_prices[coin]
+            momentum = get_momentum(coin)
 
-                        for coin in data:
-                            symbol = coin["symbol"].upper()
-                            price = coin["current_price"]
+            # ENTER LONG
+            if momentum > MOMENTUM_THRESHOLD and coin not in positions:
+                trade_size = balance * TRADE_SIZE_PERCENT
+                if trade_size > 1:
+                    positions[coin] = {
+                        "type": "long",
+                        "entry": price,
+                        "size": trade_size
+                    }
+                    balance -= trade_size
 
-                            new_coins.append(symbol)
-                            price_data[symbol] = price
+            # ENTER SHORT
+            elif momentum < -MOMENTUM_THRESHOLD and coin not in positions:
+                trade_size = balance * TRADE_SIZE_PERCENT
+                if trade_size > 1:
+                    positions[coin] = {
+                        "type": "short",
+                        "entry": price,
+                        "size": trade_size
+                    }
+                    balance -= trade_size
 
-                            if symbol not in price_history:
-                                price_history[symbol] = deque(maxlen=HISTORY_LENGTH)
+            # EXIT LONG
+            if coin in positions and positions[coin]["type"] == "long":
+                if momentum < 0:
+                    entry = positions[coin]["entry"]
+                    size = positions[coin]["size"]
+                    pnl = size * ((price - entry) / entry)
+                    balance += size + pnl
+                    del positions[coin]
 
-                            price_history[symbol].append(price)
-
-                        if len(new_coins) > 0:
-                            active_coins[:] = new_coins
-                            last_update_time = time.strftime("%H:%M:%S")
-
-        except Exception as e:
-            print("API error:", e)
+            # EXIT SHORT
+            if coin in positions and positions[coin]["type"] == "short":
+                if momentum > 0:
+                    entry = positions[coin]["entry"]
+                    size = positions[coin]["size"]
+                    pnl = size * ((entry - price) / entry)
+                    balance += size + pnl
+                    del positions[coin]
 
         time.sleep(PRICE_REFRESH)
 
-
-# =========================
-# BOT LOOP
-# =========================
-
-bots = []
-
-for i in range(3):
-    bots.append(TradingBot(f"Conservative {i+1}", aggressive=False))
-
-for i in range(5):
-    bots.append(TradingBot(f"Aggressive {i+1}", aggressive=True))
-
-
-def bot_loop():
-    while True:
-        with lock:
-            for bot in bots:
-                bot.evaluate()
-        time.sleep(2)
-
-
-# =========================
-# DASHBOARD
-# =========================
-
 @app.route("/")
-def dashboard():
+def home():
     return render_template_string("""
-    <html>
-    <head>
-        <title>Breakout Trading Engine</title>
-        <meta http-equiv="refresh" content="4">
-        <style>
-            body { background:#0e1117; color:white; font-family:Arial; padding:20px; }
-            table { border-collapse:collapse; width:100%; margin-bottom:20px; }
-            th, td { padding:6px; border:1px solid #222; }
-            th { background:#161b22; }
-            .bot { border:1px solid #333; padding:15px; margin:10px 0; border-radius:8px; }
-        </style>
-    </head>
-    <body>
-        <h1>Breakout Momentum Trading Engine</h1>
-        <p>Last Market Update: {{ last_update }}</p>
+    <h1>Dual Momentum Bot</h1>
+    <h2>Balance: ${{balance}}</h2>
 
-        <h2>Active Coins</h2>
-        {% if coins %}
-        <table>
-            <tr>
-                <th>Symbol</th>
-                <th>Price</th>
-            </tr>
-            {% for coin in coins %}
-            <tr>
-                <td>{{ coin }}</td>
-                <td>${{ prices.get(coin, 0) }}</td>
-            </tr>
-            {% endfor %}
-        </table>
-        {% else %}
-            <p>Waiting for market data...</p>
-        {% endif %}
+    <h3>Open Positions</h3>
+    <ul>
+    {% for coin, pos in positions.items() %}
+        <li>{{coin}} - {{pos.type}} @ ${{pos.entry}}</li>
+    {% endfor %}
+    </ul>
 
-        <h2>Bots</h2>
-        {% for bot in bots %}
-        <div class="bot">
-            <strong>{{ bot.name }}</strong><br>
-            Balance: ${{ "%.2f"|format(bot.balance) }}<br>
-            Wins: {{ bot.wins }} | Losses: {{ bot.losses }}<br>
-            Holdings:
-            {% for c in bot.positions %}
-                {{ c }}
-            {% endfor %}
-        </div>
-        {% endfor %}
-    </body>
-    </html>
-    """, bots=bots, coins=active_coins, prices=price_data, last_update=last_update_time)
-
-
-@app.route("/health")
-def health():
-    return "Server running"
-
-
-# =========================
-# START THREADS
-# =========================
-
-threading.Thread(target=fetch_market, daemon=True).start()
-threading.Thread(target=bot_loop, daemon=True).start()
+    <h3>Live Prices</h3>
+    <ul>
+    {% for coin, price in prices.items() %}
+        <li>{{coin}} : ${{price}}</li>
+    {% endfor %}
+    </ul>
+    """, balance=round(balance,2), positions=positions, prices=last_prices)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    threading.Thread(target=trade_engine, daemon=True).start()
+    app.run(host="0.0.0.0", port=8080)
