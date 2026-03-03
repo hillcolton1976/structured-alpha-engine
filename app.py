@@ -12,44 +12,43 @@ START_BALANCE = 50.0
 TRADE_SIZE_PERCENT = 0.25
 PRICE_REFRESH = 5
 HISTORY = 20
-MOMENTUM_THRESHOLD = 0.002  # 0.2% momentum trigger
+MOMENTUM_THRESHOLD = 0.002  # 0.2%
 
-COINS = [
-    "bitcoin",
-    "ethereum",
-    "solana",
-    "ripple",
-    "dogecoin"
-]
+# Binance trading pairs
+COINS = {
+    "BTC": "BTCUSDT",
+    "ETH": "ETHUSDT",
+    "SOL": "SOLUSDT",
+    "XRP": "XRPUSDT",
+    "DOGE": "DOGEUSDT"
+}
 
 # ================= STATE =================
 balance = START_BALANCE
 positions = {}
-price_history = {coin: deque(maxlen=HISTORY) for coin in COINS}
+price_history = {symbol: deque(maxlen=HISTORY) for symbol in COINS}
 last_prices = {}
 lock = threading.Lock()
 
-# ================= FETCH PRICES =================
+# ================= FETCH PRICES FROM BINANCE =================
 def fetch_prices():
-    global last_prices
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(COINS)}&vs_currencies=usd"
-        r = requests.get(url, headers=headers, timeout=10)
+        for symbol, pair in COINS.items():
+            url = f"https://api.binance.com/api/v3/ticker/price?symbol={pair}"
+            r = requests.get(url, timeout=5)
 
-        if r.status_code == 200:
-            data = r.json()
-            for coin in COINS:
-                if coin in data:
-                    price = data[coin]["usd"]
-                    last_prices[coin] = price
-                    price_history[coin].append(price)
+            if r.status_code == 200:
+                data = r.json()
+                price = float(data["price"])
+                last_prices[symbol] = price
+                price_history[symbol].append(price)
+
     except Exception as e:
         print("API Error:", e)
 
 # ================= MOMENTUM =================
-def get_momentum(coin):
-    hist = price_history[coin]
+def get_momentum(symbol):
+    hist = price_history[symbol]
     if len(hist) < HISTORY:
         return 0
     return (hist[-1] - hist[0]) / hist[0]
@@ -62,18 +61,18 @@ def trade_engine():
         with lock:
             fetch_prices()
 
-            for coin in COINS:
-                if coin not in last_prices:
+            for symbol in COINS.keys():
+                if symbol not in last_prices:
                     continue
 
-                price = last_prices[coin]
-                momentum = get_momentum(coin)
+                price = last_prices[symbol]
+                momentum = get_momentum(symbol)
 
                 # ENTER LONG
-                if momentum > MOMENTUM_THRESHOLD and coin not in positions:
+                if momentum > MOMENTUM_THRESHOLD and symbol not in positions:
                     trade_size = balance * TRADE_SIZE_PERCENT
                     if trade_size > 1:
-                        positions[coin] = {
+                        positions[symbol] = {
                             "type": "long",
                             "entry": price,
                             "size": trade_size
@@ -81,10 +80,10 @@ def trade_engine():
                         balance -= trade_size
 
                 # ENTER SHORT
-                elif momentum < -MOMENTUM_THRESHOLD and coin not in positions:
+                elif momentum < -MOMENTUM_THRESHOLD and symbol not in positions:
                     trade_size = balance * TRADE_SIZE_PERCENT
                     if trade_size > 1:
-                        positions[coin] = {
+                        positions[symbol] = {
                             "type": "short",
                             "entry": price,
                             "size": trade_size
@@ -92,22 +91,22 @@ def trade_engine():
                         balance -= trade_size
 
                 # EXIT LONG
-                if coin in positions and positions[coin]["type"] == "long":
+                if symbol in positions and positions[symbol]["type"] == "long":
                     if momentum < 0:
-                        entry = positions[coin]["entry"]
-                        size = positions[coin]["size"]
+                        entry = positions[symbol]["entry"]
+                        size = positions[symbol]["size"]
                         pnl = size * ((price - entry) / entry)
                         balance += size + pnl
-                        del positions[coin]
+                        del positions[symbol]
 
                 # EXIT SHORT
-                if coin in positions and positions[coin]["type"] == "short":
+                if symbol in positions and positions[symbol]["type"] == "short":
                     if momentum > 0:
-                        entry = positions[coin]["entry"]
-                        size = positions[coin]["size"]
+                        entry = positions[symbol]["entry"]
+                        size = positions[symbol]["size"]
                         pnl = size * ((entry - price) / entry)
                         balance += size + pnl
-                        del positions[coin]
+                        del positions[symbol]
 
         time.sleep(PRICE_REFRESH)
 
@@ -197,7 +196,7 @@ def home():
                 <table>
                     <tr>
                         <th>Coin</th>
-                        <th>Price</th>
+                        <th>Price (USDT)</th>
                     </tr>
                     {% for coin, price in prices.items() %}
                     <tr>
