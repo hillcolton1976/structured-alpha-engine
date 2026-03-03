@@ -3,14 +3,22 @@ import time
 import uuid
 import pickle
 import random
+import threading
 from datetime import datetime
+from flask import Flask, render_template
+
+# ==============================
+# Flask App
+# ==============================
+
+app = Flask(__name__)
 
 STATE_FILE = "bots_state.pkl"
 
+# ==============================
+# Base Bot (Independent Learning)
+# ==============================
 
-# ============================================
-# BASE BOT (Each bot learns independently)
-# ============================================
 class BaseBot:
     def __init__(self, strategy_type, capital=1000):
         self.id = str(uuid.uuid4())
@@ -21,12 +29,8 @@ class BaseBot:
         self.learning_memory = []
         self.created_at = datetime.utcnow()
 
-    def trade(self, market_data):
-        """
-        Replace this logic with your real strategy.
-        Each strategy type behaves differently.
-        """
-
+    def trade(self):
+        # Strategy behavior
         if self.strategy_type == "scalper":
             result = random.uniform(-2, 3)
 
@@ -43,93 +47,80 @@ class BaseBot:
         self.capital += result
 
         self.trade_history.append(result)
-        self.learn(result)
-
-    def learn(self, trade_result):
-        """
-        Independent learning memory per bot
-        """
         self.learning_memory.append({
-            "result": trade_result,
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.utcnow(),
+            "result": result
         })
 
-        # Example adaptation logic
-        if len(self.trade_history) > 10:
-            avg = sum(self.trade_history[-10:]) / 10
-            if avg < 0:
-                self.capital *= 0.98  # risk reduction
-            else:
-                self.capital *= 1.01  # confidence boost
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "strategy": self.strategy_type,
+            "capital": round(self.capital, 2),
+            "pnl": round(self.pnl, 2),
+            "trades": len(self.trade_history)
+        }
 
+# ==============================
+# Bot Manager
+# ==============================
 
-# ============================================
-# BOT MANAGER (Never replaces bots)
-# ============================================
 class BotManager:
     def __init__(self):
         self.bots = []
-        self.load_state()
 
-    # --------- ADD BOTS (never replaces) ---------
-    def add_bot(self, strategy_type, capital=1000):
-        bot = BaseBot(strategy_type, capital)
+    def add_bot(self, strategy):
+        bot = BaseBot(strategy)
         self.bots.append(bot)
-        print(f"Added {strategy_type} bot | ID: {bot.id}")
         self.save_state()
 
-    # --------- SAVE STATE ---------
+    def run_all(self):
+        for bot in self.bots:
+            bot.trade()
+        self.save_state()
+
     def save_state(self):
         with open(STATE_FILE, "wb") as f:
             pickle.dump(self.bots, f)
 
-    # --------- LOAD STATE ---------
     def load_state(self):
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, "rb") as f:
                 self.bots = pickle.load(f)
-            print(f"Loaded {len(self.bots)} bots from disk.")
-        else:
-            print("No previous state found. Starting fresh.")
 
-    # --------- RUN ALL BOTS ---------
-    def run_all(self, market_data):
-        for bot in self.bots:
-            bot.trade(market_data)
-        self.save_state()
+manager = BotManager()
+manager.load_state()
 
-    # --------- STATUS ---------
-    def status(self):
-        for bot in self.bots:
-            print(
-                f"ID: {bot.id[:6]} | "
-                f"Strategy: {bot.strategy_type} | "
-                f"Capital: {round(bot.capital,2)} | "
-                f"PnL: {round(bot.pnl,2)}"
-            )
+# ==============================
+# Auto Create Bots If None Exist
+# ==============================
 
+if not manager.bots:
+    manager.add_bot("scalper")
+    manager.add_bot("aggressive")
+    manager.add_bot("balanced")
 
-# ============================================
-# MAIN LOOP (Keeps them UP)
-# ============================================
-if __name__ == "__main__":
+# ==============================
+# Background Trading Thread
+# ==============================
 
-    manager = BotManager()
-
-    # Example: Only add if you WANT new ones
-    if len(manager.bots) == 0:
-        manager.add_bot("balanced", 1000)
-        manager.add_bot("aggressive", 1000)
-        manager.add_bot("scalper", 1000)
-
+def bot_loop():
     while True:
-        try:
-            fake_market_data = {}
-            manager.run_all(fake_market_data)
-            manager.status()
-            time.sleep(5)
+        manager.run_all()
+        time.sleep(5)
 
-        except Exception as e:
-            print("Error occurred:", e)
-            print("Restarting loop...")
-            time.sleep(5)
+threading.Thread(target=bot_loop, daemon=True).start()
+
+# ==============================
+# Routes
+# ==============================
+
+@app.route("/")
+def dashboard():
+    bot_data = [bot.to_dict() for bot in manager.bots]
+    total_equity = round(sum(bot.capital for bot in manager.bots), 2)
+    return render_template(
+        "dashboard.html",
+        bots=bot_data,
+        total_equity=total_equity
+    )
