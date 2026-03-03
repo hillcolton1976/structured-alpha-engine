@@ -1,11 +1,14 @@
-from flask import Flask, render_template_string
-import random
+from flask import Flask, jsonify, render_template_string
 import threading
+import websocket
+import json
+import random
 import time
 
 app = Flask(__name__)
 
 START_BALANCE = 50.0
+btc_price = None
 bots = []
 
 class TradingBot:
@@ -13,10 +16,8 @@ class TradingBot:
         self.name = name
         self.balance = START_BALANCE
         self.learning_bias = random.uniform(0.8, 1.2)
-        self.trades = 0
 
     def update(self):
-        # simple simulated learning drift
         self.learning_bias *= random.uniform(0.999, 1.001)
 
 def bot_loop():
@@ -25,10 +26,23 @@ def bot_loop():
             bot.update()
         time.sleep(5)
 
+def on_message(ws, message):
+    global btc_price
+    data = json.loads(message)
+    btc_price = float(data["p"])
+
+def start_ws():
+    ws = websocket.WebSocketApp(
+        "wss://stream.binance.com:9443/ws/btcusdt@trade",
+        on_message=on_message
+    )
+    ws.run_forever()
+
 for i in range(4):
     bots.append(TradingBot(f"Bot {i+1}"))
 
 threading.Thread(target=bot_loop, daemon=True).start()
+threading.Thread(target=start_ws, daemon=True).start()
 
 @app.route("/")
 def dashboard():
@@ -38,9 +52,7 @@ def dashboard():
         <title>Structured Alpha Engine</title>
         <style>
             body { background:#0f1117; color:white; font-family:Arial; padding:20px; }
-            .price { font-size:48px; font-weight:bold; transition:0.2s; }
-            .green { color:#00ff88; }
-            .red { color:#ff4d4d; }
+            .price { font-size:48px; font-weight:bold; }
             .bot { border:1px solid #222; padding:15px; margin-top:15px; border-radius:8px; }
         </style>
     </head>
@@ -61,37 +73,25 @@ def dashboard():
         {% endfor %}
 
         <script>
-            const priceEl = document.getElementById("btc");
-            let lastPrice = null;
-
-            const ws = new WebSocket("wss://stream.binance.com:9443/ws/btcusdt@trade");
-
-            ws.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                const price = parseFloat(data.p);
-                priceEl.innerText = "$" + price.toFixed(2);
-
-                if (lastPrice) {
-                    if (price > lastPrice) {
-                        priceEl.classList.remove("red");
-                        priceEl.classList.add("green");
-                    } else if (price < lastPrice) {
-                        priceEl.classList.remove("green");
-                        priceEl.classList.add("red");
-                    }
+            async function updatePrice() {
+                const res = await fetch("/price");
+                const data = await res.json();
+                if (data.price) {
+                    document.getElementById("btc").innerText =
+                        "$" + data.price.toFixed(2);
                 }
-
-                lastPrice = price;
-            };
-
-            ws.onerror = function() {
-                priceEl.innerText = "Connection Error";
-            };
+            }
+            setInterval(updatePrice, 1000);
+            updatePrice();
         </script>
 
     </body>
     </html>
     """, bots=bots)
+
+@app.route("/price")
+def price():
+    return jsonify({"price": btc_price})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
