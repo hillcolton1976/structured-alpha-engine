@@ -8,8 +8,8 @@ from collections import deque
 app = Flask(__name__)
 
 START_BALANCE = 50.0
-PRICE_REFRESH = 8
-HISTORY_LENGTH = 12
+PRICE_REFRESH = 6
+HISTORY_LENGTH = 20
 
 price_data = {}
 price_history = {}
@@ -31,14 +31,14 @@ class TradingBot:
         self.losses = 0
 
         if aggressive:
-            self.entry_threshold = 0.015     # 1.5% pullback from high
-            self.take_profit = 0.04          # 4% gain
-            self.stop_loss = 0.02            # 2% loss
+            self.entry_threshold = 0.004     # 0.4% breakout
+            self.take_profit = 0.03          # 3% gain
+            self.stop_loss = 0.018           # 1.8% loss
             self.position_size = 0.60        # 60% capital
         else:
-            self.entry_threshold = 0.008     # 0.8% pullback
-            self.take_profit = 0.02          # 2% gain
-            self.stop_loss = 0.012           # 1.2% loss
+            self.entry_threshold = 0.003     # 0.3% breakout
+            self.take_profit = 0.015         # 1.5% gain
+            self.stop_loss = 0.01            # 1% loss
             self.position_size = 0.35        # 35% capital
 
     def evaluate(self):
@@ -46,18 +46,18 @@ class TradingBot:
 
             if coin not in price_history:
                 continue
-            if len(price_history[coin]) < 5:
+            if len(price_history[coin]) < 6:
                 continue
 
             prices = list(price_history[coin])
             current = prices[-1]
-            recent_high = max(prices)
 
-            # ================= ENTRY =================
+            # ================= ENTRY (BREAKOUT) =================
             if coin not in self.positions:
-                drop_from_high = (current - recent_high) / recent_high
+                recent_high = max(prices[:-1])  # exclude current
+                breakout = (current - recent_high) / recent_high
 
-                if drop_from_high <= -self.entry_threshold:
+                if breakout >= self.entry_threshold:
                     allocation = self.balance * self.position_size
                     if allocation > 1:
                         self.balance -= allocation
@@ -121,8 +121,9 @@ def fetch_market():
 
                             price_history[symbol].append(price)
 
-                        active_coins[:] = new_coins
-                        last_update_time = time.strftime("%H:%M:%S")
+                        if len(new_coins) > 0:
+                            active_coins[:] = new_coins
+                            last_update_time = time.strftime("%H:%M:%S")
 
         except Exception as e:
             print("API error:", e)
@@ -160,8 +161,8 @@ def dashboard():
     return render_template_string("""
     <html>
     <head>
-        <title>Aggressive Trading Engine</title>
-        <meta http-equiv="refresh" content="5">
+        <title>Breakout Trading Engine</title>
+        <meta http-equiv="refresh" content="4">
         <style>
             body { background:#0e1117; color:white; font-family:Arial; padding:20px; }
             table { border-collapse:collapse; width:100%; margin-bottom:20px; }
@@ -171,7 +172,7 @@ def dashboard():
         </style>
     </head>
     <body>
-        <h1>Aggressive Pullback Trading Engine</h1>
+        <h1>Breakout Momentum Trading Engine</h1>
         <p>Last Market Update: {{ last_update }}</p>
 
         <h2>Active Coins</h2>
