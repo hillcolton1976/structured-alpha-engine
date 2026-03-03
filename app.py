@@ -8,8 +8,10 @@ app = Flask(__name__)
 SYMBOL = "BTCUSDT"
 BINANCE_URL = f"https://api.binance.com/api/v3/ticker/price?symbol={SYMBOL}"
 
-UP_THRESHOLD = 1.5
-DOWN_THRESHOLD = -0.5
+UP_THRESHOLD = 1.5     # +1.5%
+DOWN_THRESHOLD = -0.5  # -0.5%
+
+STARTING_CASH = 50
 
 last_reference_price = None
 
@@ -18,51 +20,40 @@ last_reference_price = None
 # BOT CLASS
 # =========================
 class TradingBot:
-    def __init__(self, strategy, starting_cash=50):
-        self.strategy = strategy
-        self.cash = starting_cash
+    def __init__(self, name):
+        self.name = name
+        self.cash = STARTING_CASH
         self.coins = 0.0
-
-        self.pnl = 0
         self.trades = 0
-        self.wins = 0
-        self.losses = 0
+        self.starting_cash = STARTING_CASH
 
-        self.memory = []
-        self.aggression = 1.0
+    def total_value(self, price):
+        if price is None:
+            return self.cash
+        return self.cash + (self.coins * price)
 
-    def portfolio_value(self, current_price):
-        return self.cash + (self.coins * current_price)
+    def profit(self, price):
+        return self.total_value(price) - self.starting_cash
 
     def trade(self, price_change_percent, current_price):
+        if current_price is None:
+            return
 
         position_size = self.cash * 0.2
 
-        # BUY on upward move
-        if price_change_percent >= UP_THRESHOLD:
-            if self.cash > 1:
-                coins_bought = position_size / current_price
-                self.cash -= position_size
-                self.coins += coins_bought
-                self.trades += 1
+        # BUY on +1.5%
+        if price_change_percent >= UP_THRESHOLD and self.cash > 1:
+            coins_bought = position_size / current_price
+            self.cash -= position_size
+            self.coins += coins_bought
+            self.trades += 1
 
-        # SELL on downward move
-        elif price_change_percent <= DOWN_THRESHOLD:
-            if self.coins > 0:
-                coins_to_sell = self.coins * 0.5
-                sale_value = coins_to_sell * current_price
-                self.cash += sale_value
-                self.coins -= coins_to_sell
-                self.trades += 1
-
-        # Calculate PnL
-        total_value = self.portfolio_value(current_price)
-        self.pnl = total_value - 50  # based on starting 50
-
-        if self.pnl > 0:
-            self.wins += 1
-        else:
-            self.losses += 1
+        # SELL 50% on -0.5%
+        elif price_change_percent <= DOWN_THRESHOLD and self.coins > 0:
+            coins_to_sell = self.coins * 0.5
+            self.cash += coins_to_sell * current_price
+            self.coins -= coins_to_sell
+            self.trades += 1
 
 
 # =========================
@@ -77,12 +68,12 @@ bots = [
 
 
 # =========================
-# GET LIVE PRICE
+# SAFE PRICE FETCH
 # =========================
 def get_price():
     try:
-        response = requests.get(BINANCE_URL, timeout=5)
-        data = response.json()
+        r = requests.get(BINANCE_URL, timeout=5)
+        data = r.json()
         return float(data["price"])
     except:
         return None
@@ -95,44 +86,54 @@ def run_trading():
     global last_reference_price
 
     while True:
-        price = get_price()
+        try:
+            price = get_price()
 
-        if price:
-            if last_reference_price is None:
-                last_reference_price = price
+            if price:
+                if last_reference_price is None:
+                    last_reference_price = price
 
-            price_change = ((price - last_reference_price) / last_reference_price) * 100
+                change = ((price - last_reference_price) / last_reference_price) * 100
 
-            if price_change >= UP_THRESHOLD or price_change <= DOWN_THRESHOLD:
-                for bot in bots:
-                    bot.trade(price_change, price)
+                if change >= UP_THRESHOLD or change <= DOWN_THRESHOLD:
+                    for bot in bots:
+                        bot.trade(change, price)
 
-                last_reference_price = price
+                    last_reference_price = price
+
+        except:
+            pass  # prevents crash
 
         time.sleep(5)
 
 
-trading_thread = threading.Thread(target=run_trading)
-trading_thread.daemon = True
+trading_thread = threading.Thread(target=run_trading, daemon=True)
 trading_thread.start()
 
 
 # =========================
-# DASHBOARD
+# DASHBOARD ROUTE
 # =========================
 @app.route("/")
 def dashboard():
-    current_price = get_price()
-    total_equity = sum(bot.portfolio_value(current_price) for bot in bots)
+    price = get_price()
+
+    if price is None:
+        price = 0
+
+    total_equity = sum(bot.total_value(price) for bot in bots)
 
     return render_template(
         "dashboard.html",
         bots=bots,
+        current_price=price,
         total_equity=round(total_equity, 2),
-        current_price=current_price,
         symbol=SYMBOL
     )
 
 
+# =========================
+# REQUIRED FOR RAILWAY
+# =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
