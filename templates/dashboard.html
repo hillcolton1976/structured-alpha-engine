@@ -1,8 +1,9 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Elite AI Trader</title>
+    <title>Live AI Trading Desk</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+
     <style>
         body {
             background-color: #0f172a;
@@ -14,14 +15,21 @@
 
         h1 {
             text-align: center;
+            margin-bottom: 5px;
+        }
+
+        .price {
+            text-align: center;
+            font-size: 18px;
             margin-bottom: 10px;
+            color: #38bdf8;
         }
 
         .equity {
             text-align: center;
             font-size: 24px;
             margin-bottom: 30px;
-            color: #38bdf8;
+            color: #22c55e;
         }
 
         .bot-container {
@@ -66,12 +74,17 @@
         }
     </style>
 </head>
+
 <body>
 
-    <h1>🚀 Elite AI Trading System</h1>
+    <h1>🚀 Live AI Trading Desk</h1>
+
+    <div class="price">
+        {{ symbol }} Price: ${{ current_price | round(2) }}
+    </div>
 
     <div class="equity">
-        Total Equity: ${{ total_equity }}
+        Total Portfolio Equity: ${{ total_equity }}
     </div>
 
     <div class="bot-container">
@@ -79,7 +92,13 @@
         <div class="bot-card">
             <h2>{{ bot.strategy }}</h2>
 
-            <div class="stat">Capital: ${{ bot.capital | round(2) }}</div>
+            <div class="stat">Cash: ${{ bot.cash | round(2) }}</div>
+            <div class="stat">Coins: {{ bot.coins | round(6) }} BTC</div>
+
+            <div class="stat">
+                Portfolio Value:
+                ${{ (bot.cash + (bot.coins * current_price)) | round(2) }}
+            </div>
 
             <div class="stat">
                 PnL:
@@ -91,19 +110,6 @@
             <div class="stat">Trades: {{ bot.trades }}</div>
             <div class="stat positive">Wins: {{ bot.wins }}</div>
             <div class="stat negative">Losses: {{ bot.losses }}</div>
-
-            <div class="stat">
-                Win Rate:
-                {% if bot.trades > 0 %}
-                    {{ ((bot.wins / bot.trades) * 100) | round(2) }}%
-                {% else %}
-                    0%
-                {% endif %}
-            </div>
-
-            <div class="stat">
-                Aggression Level: {{ bot.aggression | round(2) }}
-            </div>
 
         </div>
         {% endfor %}
