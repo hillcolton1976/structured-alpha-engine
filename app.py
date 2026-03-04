@@ -1,126 +1,202 @@
-from flask import Flask, render_template_string
-import os
+from flask import Flask
+import requests
+import time
+import threading
+from collections import deque
 
 app = Flask(__name__)
 
+# ===== BOT SETTINGS =====
+
+START_CASH = 50
+cash = START_CASH
+doge = 0
+entry_price = 0
+
+wins = 0
+losses = 0
+trades = []
+
+prices = deque(maxlen=120)
+
+API = "https://api.coingecko.com/api/v3/simple/price?ids=dogecoin&vs_currencies=usd"
+
+
+# ===== GET LIVE PRICE =====
+
+def get_price():
+    try:
+        r = requests.get(API, timeout=5)
+        data = r.json()
+        return float(data["dogecoin"]["usd"])
+    except:
+        return None
+
+
+# ===== MARKET ANALYSIS =====
+
+def market_state():
+
+    if len(prices) < 60:
+        return None
+
+    short_avg = sum(list(prices)[-15:]) / 15
+    long_avg = sum(prices) / len(prices)
+
+    recent_low = min(list(prices)[-30:])
+    recent_high = max(list(prices)[-30:])
+
+    return short_avg, long_avg, recent_low, recent_high
+
+
+# ===== TRADING AI =====
+
+def trader():
+
+    global cash, doge, entry_price, wins, losses
+
+    while True:
+
+        price = get_price()
+
+        if not price:
+            time.sleep(5)
+            continue
+
+        prices.append(price)
+
+        state = market_state()
+
+        if not state:
+            time.sleep(5)
+            continue
+
+        short_avg, long_avg, low, high = state
+
+        # BUY DIP
+        if doge == 0 and price < short_avg * 0.985:
+
+            buy_amount = cash * 0.95
+            qty = buy_amount / price
+
+            doge += qty
+            cash -= buy_amount
+            entry_price = price
+
+            trades.append(f"BUY {qty:.2f} DOGE @ ${price}")
+
+        # SELL TOP
+        elif doge > 0:
+
+            profit = (price - entry_price) / entry_price * 100
+
+            if price > short_avg * 1.02 or profit > 2:
+
+                value = doge * price
+
+                if price > entry_price:
+                    wins += 1
+                else:
+                    losses += 1
+
+                cash += value
+                trades.append(f"SELL {doge:.2f} DOGE @ ${price}")
+
+                doge = 0
+
+        time.sleep(6)
+
+
+# ===== DASHBOARD =====
+
 @app.route("/")
-def home():
-    return render_template_string("""
-<html>
-<head>
-<title>Momentum Bot</title>
-<style>
-body { background:#0e1117; color:#e6edf3; font-family:Arial; padding:20px; }
-h1 { color:#58a6ff; }
-.card { background:#161b22; padding:15px; margin-bottom:20px; border-radius:10px; }
-table { width:100%; border-collapse:collapse; }
-th, td { padding:8px; text-align:left; }
-th { border-bottom:1px solid #30363d; }
-tr { border-bottom:1px solid #21262d; }
-.green { color:#3fb950; }
-.red { color:#f85149; }
-</style>
-</head>
-<body>
+def dashboard():
 
-<h1>🚀 Momentum Trader</h1>
+    price = prices[-1] if prices else 0
+    doge_value = doge * price
+    equity = cash + doge_value
 
-<div class="card">
-<h3>Balance: $<span id="balance">50.00</span></h3>
-</div>
+    history = "<br>".join(trades[-15:][::-1])
 
-<div class="card">
-<h3>Positions</h3>
-<div id="positions">None</div>
-</div>
+    return f"""
+    <html>
 
-<div class="card">
-<h3>Live Prices</h3>
-<table>
-<tr><th>Coin</th><th>Price</th></tr>
-<tbody id="prices"></tbody>
-</table>
-</div>
+    <head>
+    <meta http-equiv="refresh" content="5">
 
-<script>
-let balance = 50;
-let positions = {};
-let lastPrices = {};
-const coins = ["bitcoin","ethereum","solana","ripple","dogecoin"];
+    <style>
 
-async function fetchPrices() {
-    const response = await fetch(
-        "https://api.coingecko.com/api/v3/simple/price?ids=" 
-        + coins.join(",") 
-        + "&vs_currencies=usd"
-    );
-    const data = await response.json();
+    body {{
+    background:#0f172a;
+    color:white;
+    font-family:Arial;
+    padding:30px;
+    }}
 
-    const table = document.getElementById("prices");
-    table.innerHTML = "";
+    .card {{
+    background:#1e293b;
+    padding:20px;
+    border-radius:10px;
+    margin-bottom:20px;
+    }}
 
-    for (let coin of coins) {
-        if (!data[coin]) continue;
+    h1 {{
+    color:#38bdf8;
+    }}
 
-        let price = data[coin].usd;
-        table.innerHTML += `
-            <tr>
-                <td>${coin.toUpperCase()}</td>
-                <td>$${price}</td>
-            </tr>
-        `;
+    </style>
 
-        // Trading Logic
-        if (lastPrices[coin]) {
-            let change = (price - lastPrices[coin]) / lastPrices[coin];
+    </head>
 
-            // Buy if strong upward momentum
-            if (!positions[coin] && change > 0.003 && balance > 5) {
-                let amount = 10;
-                positions[coin] = {
-                    entry: price,
-                    amount: amount
-                };
-                balance -= amount;
-            }
+    <body>
 
-            // Sell if 1% profit
-            if (positions[coin]) {
-                let entry = positions[coin].entry;
-                if (price >= entry * 1.01) {
-                    let profit = positions[coin].amount * 1.01;
-                    balance += profit;
-                    delete positions[coin];
-                }
-            }
-        }
+    <h1>DOGE AI DIP TRADER</h1>
 
-        lastPrices[coin] = price;
-    }
+    <div class="card">
 
-    document.getElementById("balance").innerText = balance.toFixed(2);
+    <h3>Market</h3>
 
-    // Update positions display
-    let posDiv = document.getElementById("positions");
-    if (Object.keys(positions).length === 0) {
-        posDiv.innerHTML = "None";
-    } else {
-        let html = "";
-        for (let coin in positions) {
-            html += `<div class="green">${coin.toUpperCase()} @ $${positions[coin].entry}</div>`;
-        }
-        posDiv.innerHTML = html;
-    }
-}
+    Price: ${price:.5f}
 
-fetchPrices();
-setInterval(fetchPrices, 5000);
-</script>
+    </div>
 
-</body>
-</html>
-""")
+    <div class="card">
+
+    <h3>Portfolio</h3>
+
+    Cash: ${cash:.2f} <br>
+    DOGE: {doge:.2f} <br>
+    DOGE Value: ${doge_value:.2f} <br>
+    Total Equity: ${equity:.2f}
+
+    </div>
+
+    <div class="card">
+
+    <h3>Performance</h3>
+
+    Wins: {wins} <br>
+    Losses: {losses}
+
+    </div>
+
+    <div class="card">
+
+    <h3>Trade Log</h3>
+
+    {history}
+
+    </div>
+
+    </body>
+
+    </html>
+    """
+
+
+# ===== START BOT =====
+
+threading.Thread(target=trader, daemon=True).start()
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=8080)
