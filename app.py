@@ -1,55 +1,100 @@
 from flask import Flask
 import requests
-import time
 import threading
+import time
 from collections import deque
 
 app = Flask(__name__)
 
-# ===== BOT SETTINGS =====
+# ----- SETTINGS -----
 
-START_CASH = 50
+START_CASH = 100
 cash = START_CASH
 doge = 0
 entry_price = 0
 
 wins = 0
 losses = 0
-trades = []
+trade_log = []
 
-prices = deque(maxlen=120)
+prices = deque(maxlen=100)
 
 API = "https://api.coingecko.com/api/v3/simple/price?ids=dogecoin&vs_currencies=usd"
 
 
-# ===== GET LIVE PRICE =====
+# ----- PRICE FETCHER -----
 
 def get_price():
+
     try:
-        r = requests.get(API, timeout=5)
+        r = requests.get(API, timeout=10)
+
+        if r.status_code != 200:
+            return None
+
         data = r.json()
+
         return float(data["dogecoin"]["usd"])
+
     except:
         return None
 
 
-# ===== MARKET ANALYSIS =====
+# ----- RSI -----
 
-def market_state():
+def rsi(period=14):
 
-    if len(prices) < 60:
+    if len(prices) < period+1:
+        return 50
+
+    gains = []
+    losses = []
+
+    for i in range(-period, -1):
+
+        change = prices[i+1] - prices[i]
+
+        if change > 0:
+            gains.append(change)
+        else:
+            losses.append(abs(change))
+
+    avg_gain = sum(gains)/period if gains else 0.0001
+    avg_loss = sum(losses)/period if losses else 0.0001
+
+    rs = avg_gain / avg_loss
+
+    return 100 - (100/(1+rs))
+
+
+# ----- ANALYSIS -----
+
+def analyze():
+
+    if len(prices) < 30:
         return None
 
-    short_avg = sum(list(prices)[-15:]) / 15
-    long_avg = sum(prices) / len(prices)
+    price = prices[-1]
 
-    recent_low = min(list(prices)[-30:])
-    recent_high = max(list(prices)[-30:])
+    short_ma = sum(list(prices)[-10:]) / 10
+    long_ma = sum(list(prices)[-30:]) / 30
 
-    return short_avg, long_avg, recent_low, recent_high
+    current_rsi = rsi()
+
+    signal = "hold"
+
+    # DIP BUY
+    if price < short_ma * 0.99 and current_rsi < 40:
+        signal = "buy"
+
+    # TOP SELL
+    if price > short_ma * 1.01 and current_rsi > 60:
+        signal = "sell"
+
+    return price, short_ma, long_ma, current_rsi, signal
 
 
-# ===== TRADING AI =====
+# ----- TRADER LOOP -----
 
 def trader():
 
@@ -60,37 +105,37 @@ def trader():
         price = get_price()
 
         if not price:
-            time.sleep(5)
+            time.sleep(15)
             continue
 
         prices.append(price)
 
-        state = market_state()
+        data = analyze()
 
-        if not state:
-            time.sleep(5)
+        if not data:
+            time.sleep(15)
             continue
 
-        short_avg, long_avg, low, high = state
+        price, short_ma, long_ma, current_rsi, signal = data
 
-        # BUY DIP
-        if doge == 0 and price < short_avg * 0.985:
+        # BUY
+        if signal == "buy" and cash > 10:
 
-            buy_amount = cash * 0.95
-            qty = buy_amount / price
+            amount = cash * 0.5
+            qty = amount / price
 
             doge += qty
-            cash -= buy_amount
+            cash -= amount
             entry_price = price
 
-            trades.append(f"BUY {qty:.2f} DOGE @ ${price}")
+            trade_log.append(f"BUY {qty:.2f} DOGE @ ${price}")
 
-        # SELL TOP
+        # SELL
         elif doge > 0:
 
             profit = (price - entry_price) / entry_price * 100
 
-            if price > short_avg * 1.02 or profit > 2:
+            if signal == "sell" or profit > 2 or profit < -2:
 
                 value = doge * price
 
@@ -100,48 +145,50 @@ def trader():
                     losses += 1
 
                 cash += value
-                trades.append(f"SELL {doge:.2f} DOGE @ ${price}")
+
+                trade_log.append(
+                    f"SELL {doge:.2f} DOGE @ ${price}  P/L {profit:.2f}%"
+                )
 
                 doge = 0
 
-        time.sleep(6)
+        time.sleep(20)
 
 
-# ===== DASHBOARD =====
+# ----- DASHBOARD -----
 
 @app.route("/")
 def dashboard():
 
     price = prices[-1] if prices else 0
+
     doge_value = doge * price
     equity = cash + doge_value
 
-    history = "<br>".join(trades[-15:][::-1])
+    log = "<br>".join(trade_log[-15:][::-1])
 
     return f"""
+
     <html>
 
     <head>
-    <meta http-equiv="refresh" content="5">
+
+    <meta http-equiv="refresh" content="10">
 
     <style>
 
     body {{
-    background:#0f172a;
-    color:white;
-    font-family:Arial;
-    padding:30px;
+        background:#0f172a;
+        color:white;
+        font-family:Arial;
+        padding:40px;
     }}
 
     .card {{
-    background:#1e293b;
-    padding:20px;
-    border-radius:10px;
-    margin-bottom:20px;
-    }}
-
-    h1 {{
-    color:#38bdf8;
+        background:#1e293b;
+        padding:20px;
+        margin:10px;
+        border-radius:10px;
     }}
 
     </style>
@@ -150,51 +197,36 @@ def dashboard():
 
     <body>
 
-    <h1>DOGE AI DIP TRADER</h1>
+    <h1>DOGE AI TRADER</h1>
 
     <div class="card">
-
-    <h3>Market</h3>
-
-    Price: ${price:.5f}
-
+    <h2>Price: ${price:.5f}</h2>
     </div>
 
     <div class="card">
-
-    <h3>Portfolio</h3>
-
-    Cash: ${cash:.2f} <br>
-    DOGE: {doge:.2f} <br>
-    DOGE Value: ${doge_value:.2f} <br>
-    Total Equity: ${equity:.2f}
-
+    Cash: ${cash:.2f}<br>
+    DOGE Held: {doge:.2f}<br>
+    DOGE Value: ${doge_value:.2f}<br>
+    Equity: ${equity:.2f}
     </div>
 
     <div class="card">
-
-    <h3>Performance</h3>
-
-    Wins: {wins} <br>
+    Wins: {wins}<br>
     Losses: {losses}
-
     </div>
 
     <div class="card">
-
     <h3>Trade Log</h3>
-
-    {history}
-
+    {log}
     </div>
 
     </body>
-
     </html>
+
     """
 
 
-# ===== START BOT =====
+# ----- START THREAD -----
 
 threading.Thread(target=trader, daemon=True).start()
 
