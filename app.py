@@ -99,7 +99,7 @@ def trader():
                         "amount": sell_amount
                     })
 
-        time.sleep(10)
+        time.sleep(3)
 
 
 # START TRADER THREAD
