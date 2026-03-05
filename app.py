@@ -3,19 +3,23 @@ import requests
 import threading
 import time
 from collections import deque
+import statistics
 
 app = Flask(__name__)
 
 # ===== PORTFOLIO =====
 
-cash = 50.0
-doge = 0.0
+START_BALANCE = 50
+
+cash = START_BALANCE
+doge = 0
 entry_price = 0
 
 wins = 0
 losses = 0
+level = 1
 
-# ===== DATA STORAGE =====
+# ===== DATA =====
 
 prices = deque(maxlen=200)
 equity_history = deque(maxlen=200)
@@ -32,11 +36,39 @@ def get_price():
         )
 
         data = r.json()
-
         return float(data["price"])
 
     except:
         return None
+
+
+# ===== RSI =====
+
+def calculate_rsi():
+
+    if len(prices) < 15:
+        return 50
+
+    gains = []
+    losses_list = []
+
+    for i in range(1, 15):
+
+        diff = prices[-i] - prices[-i-1]
+
+        if diff > 0:
+            gains.append(diff)
+        else:
+            losses_list.append(abs(diff))
+
+    avg_gain = sum(gains) / 14 if gains else 0.00001
+    avg_loss = sum(losses_list) / 14 if losses_list else 0.00001
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
 
 # ===== TRADER =====
 
@@ -47,6 +79,7 @@ def trader():
     global entry_price
     global wins
     global losses
+    global level
 
     while True:
 
@@ -58,19 +91,25 @@ def trader():
 
         prices.append(price)
 
+        rsi = calculate_rsi()
+
         doge_value = doge * price
-        equity_history.append(cash + doge_value)
+        equity = cash + doge_value
 
-        # ===== BUY DIP =====
+        equity_history.append(equity)
 
-        if doge == 0 and len(prices) > 20:
+        # ===== BUY =====
 
-            recent_high = max(list(prices)[-20:])
+        if doge == 0 and len(prices) > 30:
+
+            recent_high = max(list(prices)[-30:])
             dip = (recent_high - price) / recent_high * 100
 
-            if dip > 0.35:
+            momentum = prices[-1] > prices[-3]
 
-                amount = cash * 0.9
+            if rsi < 35 and dip > 0.4 and momentum:
+
+                amount = cash * 0.95
                 qty = amount / price
 
                 doge += qty
@@ -87,33 +126,37 @@ def trader():
 
             profit = (price - entry_price) / entry_price * 100
 
-            # scalp profit
-            if profit > 0.35:
+            if profit > 0.6 or rsi > 65:
 
                 value = doge * price
                 cash += value
+                doge = 0
+
                 wins += 1
 
                 trade_log.insert(0,
-                    f"SELL {doge:.2f} DOGE @ ${price:.5f} | +{profit:.2f}%"
+                    f"SELL @ ${price:.5f} | +{profit:.2f}%"
                 )
 
-                doge = 0
-
-            # stop loss
-            elif profit < -1.2:
+            elif profit < -1.5:
 
                 value = doge * price
                 cash += value
+                doge = 0
+
                 losses += 1
 
                 trade_log.insert(0,
-                    f"STOP LOSS {doge:.2f} DOGE @ ${price:.5f} | {profit:.2f}%"
+                    f"STOP LOSS @ ${price:.5f} | {profit:.2f}%"
                 )
 
-                doge = 0
+        # ===== LEVEL SYSTEM =====
+
+        if equity > START_BALANCE * (1 + level * 0.05):
+            level += 1
 
         time.sleep(5)
+
 
 # ===== API =====
 
@@ -133,11 +176,13 @@ def data():
         "equity": round(equity,2),
         "wins": wins,
         "losses": losses,
+        "level": level,
         "prices": list(prices),
         "equity_history": list(equity_history),
-        "trades": trade_log[:10]
+        "trades": trade_log[:15]
 
     })
+
 
 # ===== DASHBOARD =====
 
@@ -145,11 +190,13 @@ def data():
 def home():
     return render_template("index.html")
 
-# ===== START BOT =====
+
+# ===== BACKGROUND BOT =====
 
 threading.Thread(target=trader, daemon=True).start()
 
-# ===== RUN =====
+
+# ===== START SERVER =====
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
