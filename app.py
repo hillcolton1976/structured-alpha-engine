@@ -1,97 +1,97 @@
+from flask import Flask, jsonify, render_template_string
 import requests
-import time
 import threading
+import time
 from collections import deque
-from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
-# Starting balance
-cash = 50.0
+# ---- STARTING SETTINGS ----
+
+START_BALANCE = 50.0
+balance = START_BALANCE
 doge = 0.0
 entry_price = None
 
-price_history = deque(maxlen=120)
-equity_history = deque(maxlen=120)
-trade_log = []
+price = 0
 
-DOGE_PRICE = 0
+prices = deque(maxlen=120)
+equity_history = deque(maxlen=300)
+trade_history = []
 
-# -----------------------
-# GET LIVE DOGE PRICE
-# -----------------------
+# ---- FETCH DOGE PRICE ----
 
 def get_price():
     try:
-        url = "https://api.binance.com/api/v3/ticker/price?symbol=DOGEUSDT"
-        r = requests.get(url, timeout=5)
-        data = r.json()
-        return float(data["price"])
+        r = requests.get(
+            "https://api.binance.com/api/v3/ticker/price?symbol=DOGEUSDT",
+            timeout=5
+        )
+        return float(r.json()["price"])
     except:
         return None
 
+# ---- TRADING BOT ----
 
-# -----------------------
-# BOT STRATEGY
-# -----------------------
-
-def bot():
-    global cash, doge, entry_price, DOGE_PRICE
+def trader():
+    global balance, doge, entry_price, price
 
     while True:
 
-        price = get_price()
-
-        if price is None:
+        p = get_price()
+        if p is None:
             time.sleep(2)
             continue
 
-        DOGE_PRICE = price
-        price_history.append(price)
+        price = p
+        prices.append(p)
 
-        equity = cash + doge * price
+        if len(prices) > 20:
+
+            short = sum(list(prices)[-5:]) / 5
+            long = sum(list(prices)[-20:]) / 20
+
+            # BUY DIP
+            if doge == 0 and short < long * 0.995:
+
+                doge = balance / price
+                entry_price = price
+                balance = 0
+
+                trade_history.append({
+                    "type": "BUY",
+                    "price": price
+                })
+
+            # SELL TOP
+            elif doge > 0 and price > entry_price * 1.01:
+
+                balance = doge * price
+                doge = 0
+                entry_price = None
+
+                trade_history.append({
+                    "type": "SELL",
+                    "price": price
+                })
+
+        equity = balance + doge * price
         equity_history.append(equity)
-
-        if len(price_history) < 20:
-            time.sleep(2)
-            continue
-
-        avg = sum(price_history)/len(price_history)
-        dip = avg * 0.992
-        scalp = avg * 1.006
-
-        # BUY DIP
-        if price < dip and cash > 5:
-            amount = cash / price
-            doge += amount
-            entry_price = price
-            cash = 0
-
-            trade_log.append(
-                f"BUY {amount:.2f} DOGE @ {price:.4f}"
-            )
-
-        # SELL SCALP
-        elif doge > 0 and price > scalp:
-            cash += doge * price
-
-            trade_log.append(
-                f"SELL {doge:.2f} DOGE @ {price:.4f}"
-            )
-
-            doge = 0
-            entry_price = None
 
         time.sleep(2)
 
+# ---- START BACKGROUND BOT ----
 
-threading.Thread(target=bot, daemon=True).start()
+threading.Thread(target=trader, daemon=True).start()
 
-# -----------------------
-# UI
-# -----------------------
+# ---- DASHBOARD PAGE ----
 
-HTML = """
+@app.route("/")
+def home():
+
+    return render_template_string("""
+
+<!DOCTYPE html>
 <html>
 <head>
 
@@ -99,26 +99,28 @@ HTML = """
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-<meta http-equiv="refresh" content="2">
-
 <style>
 
 body{
 background:#0f172a;
 color:white;
 font-family:Arial;
-padding:20px;
+text-align:center;
 }
 
 .card{
 background:#1e293b;
 padding:20px;
-border-radius:10px;
-margin-bottom:20px;
+margin:10px;
+border-radius:12px;
+display:inline-block;
+width:200px;
 }
 
-h1{
-color:#38bdf8;
+canvas{
+background:white;
+border-radius:10px;
+margin-top:20px;
 }
 
 </style>
@@ -130,91 +132,114 @@ color:#38bdf8;
 <h1>DOGE Auto Trader</h1>
 
 <div class="card">
-
-<h2>Market</h2>
-
-DOGE Price: ${{price}}
-
+<h3>Price</h3>
+<div id="price">0</div>
 </div>
 
 <div class="card">
+<h3>Balance</h3>
+<div id="balance">0</div>
+</div>
 
-<h2>Portfolio</h2>
+<div class="card">
+<h3>DOGE</h3>
+<div id="doge">0</div>
+</div>
 
-Cash: ${{cash}}
+<div class="card">
+<h3>Equity</h3>
+<div id="equity">0</div>
+</div>
 
 <br><br>
 
-DOGE Held: {{doge}}
-
-<br><br>
-
-Equity: ${{equity}}
-
-</div>
-
-<div class="card">
-
-<h2>Trade Log</h2>
-
-{% for t in trades %}
-{{t}}<br>
-{% endfor %}
-
-</div>
-
-<div class="card">
-
-<h2>Equity Chart</h2>
-
-<canvas id="chart"></canvas>
-
-</div>
-
+<canvas id="priceChart" width="600" height="200"></canvas>
+<br>
+<canvas id="equityChart" width="600" height="200"></canvas>
 
 <script>
 
-var ctx = document.getElementById('chart').getContext('2d');
+let priceData=[]
+let equityData=[]
+let labels=[]
 
-new Chart(ctx,{
+const priceChart = new Chart(
+document.getElementById('priceChart'),
+{
 type:'line',
 data:{
-labels: {{labels}},
+labels:labels,
 datasets:[{
-label:'Equity',
-data: {{equity}},
+label:'DOGE Price',
+data:priceData,
+borderWidth:2
 }]
 }
-});
+})
+
+const equityChart = new Chart(
+document.getElementById('equityChart'),
+{
+type:'line',
+data:{
+labels:labels,
+datasets:[{
+label:'Equity',
+data:equityData,
+borderWidth:2
+}]
+}
+})
+
+async function update(){
+
+let r = await fetch("/data")
+let d = await r.json()
+
+document.getElementById("price").innerText=d.price
+document.getElementById("balance").innerText=d.balance.toFixed(2)
+document.getElementById("doge").innerText=d.doge.toFixed(2)
+document.getElementById("equity").innerText=d.equity.toFixed(2)
+
+labels.push("")
+priceData.push(d.price)
+equityData.push(d.equity)
+
+if(labels.length>50){
+labels.shift()
+priceData.shift()
+equityData.shift()
+}
+
+priceChart.update()
+equityChart.update()
+
+}
+
+setInterval(update,2000)
 
 </script>
 
 </body>
-
 </html>
-"""
 
-# -----------------------
-# PAGE
-# -----------------------
+""")
 
-@app.route("/")
-def home():
+# ---- DATA API ----
 
-    price = DOGE_PRICE
-    equity = cash + doge * price
+@app.route("/data")
+def data():
 
-    return render_template_string(
-        HTML,
-        price=round(price,5),
-        cash=round(cash,2),
-        doge=round(doge,2),
-        equity=round(equity,2),
-        trades=list(trade_log)[-10:],
-        labels=list(range(len(equity_history))),
-        equity=list(equity_history)
+    equity = balance + doge * price
+
+    return jsonify(
+        price=price,
+        balance=balance,
+        doge=doge,
+        equity=equity
     )
 
+# ---- RUN SERVER ----
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=8080)
