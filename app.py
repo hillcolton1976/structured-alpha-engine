@@ -8,102 +8,90 @@ app = Flask(__name__)
 # STARTING PORTFOLIO
 cash = 50.0
 doge = 0.0
-equity = 50.0
+entry_price = 0
 
 wins = 0
 losses = 0
-
-last_buy_price = 0
 
 price_history = []
 equity_history = []
 trade_history = []
 
-running = True
-
-
-# GET DOGE PRICE
 def get_price():
     try:
-        r = requests.get(
-            "https://api.coingecko.com/api/v3/simple/price?ids=dogecoin&vs_currencies=usd",
-            timeout=5
-        )
-        data = r.json()
-        return float(data["dogecoin"]["usd"])
+        url = "https://api.binance.com/api/v3/ticker/price?symbol=DOGEUSDT"
+        r = requests.get(url).json()
+        return float(r["price"])
     except:
-        return None
+        return 0
 
 
-# TRADING BRAIN
 def trader():
+    global cash, doge, entry_price, wins, losses
 
-    global cash, doge, equity, last_buy_price, wins, losses
-
-    while running:
+    while True:
 
         price = get_price()
 
-        if price:
+        if price == 0:
+            time.sleep(1)
+            continue
 
-            price_history.append(price)
+        price_history.append(price)
 
-            if len(price_history) > 60:
-                price_history.pop(0)
+        if len(price_history) > 50:
+            price_history.pop(0)
 
-            equity = cash + doge * price
-            equity_history.append(equity)
+        # DIP DETECTION
+        if doge == 0 and len(price_history) > 10:
 
-            if len(equity_history) > 60:
-                equity_history.pop(0)
+            avg = sum(price_history[-10:]) / 10
 
-            if len(price_history) > 10:
+            if price < avg * 0.995:  # dip
 
-                avg = sum(price_history[-10:]) / 10
+                doge = cash / price
+                entry_price = price
+                cash = 0
 
-                dip = price < avg * 0.995
-                peak = price > avg * 1.005
+                trade_history.append({
+                    "type": "BUY",
+                    "price": price
+                })
 
-                # BUY DIP
-                if dip and cash > 5:
+        # SELL LOGIC
+        if doge > 0:
 
-                    buy_amount = cash * 0.5
-                    doge_bought = buy_amount / price
+            if price > entry_price * 1.01:
 
-                    doge += doge_bought
-                    cash -= buy_amount
+                cash = doge * price
+                doge = 0
 
-                    last_buy_price = price
+                wins += 1
 
-                    trade_history.append({
-                        "type": "BUY",
-                        "price": price,
-                        "amount": doge_bought
-                    })
+                trade_history.append({
+                    "type": "SELL",
+                    "price": price
+                })
 
-                # SELL PEAK
-                if peak and doge > 0:
+            elif price < entry_price * 0.98:
 
-                    sell_amount = doge * 0.5
-                    cash += sell_amount * price
-                    doge -= sell_amount
+                cash = doge * price
+                doge = 0
 
-                    if price > last_buy_price:
-                        wins += 1
-                    else:
-                        losses += 1
+                losses += 1
 
-                    trade_history.append({
-                        "type": "SELL",
-                        "price": price,
-                        "amount": sell_amount
-                    })
+                trade_history.append({
+                    "type": "STOP",
+                    "price": price
+                })
 
-        time.sleep(3)
+        equity = cash + doge * price
+        equity_history.append(equity)
 
+        if len(equity_history) > 100:
+            equity_history.pop(0)
 
-# START TRADER THREAD
-threading.Thread(target=trader, daemon=True).start()
+        time.sleep(1)
 
 
 @app.route("/")
@@ -116,20 +104,22 @@ def data():
 
     price = get_price()
 
-    return jsonify({
+    equity = cash + doge * price
 
+    return jsonify({
         "price": price,
-        "cash": round(cash, 2),
-        "doge": round(doge, 2),
-        "equity": round(cash + doge * price if price else cash, 2),
+        "cash": cash,
+        "doge": doge,
+        "equity": equity,
         "wins": wins,
         "losses": losses,
-        "prices": price_history,
+        "price_history": price_history,
         "equity_history": equity_history,
         "trades": trade_history[-10:]
-
     })
 
 
+threading.Thread(target=trader, daemon=True).start()
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=3000)
+    app.run(host="0.0.0.0", port=5000)
