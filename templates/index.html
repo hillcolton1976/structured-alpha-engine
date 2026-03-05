@@ -3,7 +3,6 @@
 <head>
 
 <title>DOGE AI Trader</title>
-
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <style>
@@ -17,7 +16,7 @@ padding:30px;
 
 .title{
 color:#fbbf24;
-font-size:30px;
+font-size:32px;
 margin-bottom:20px;
 }
 
@@ -35,7 +34,7 @@ border-radius:10px;
 
 canvas{
 background:#1e293b;
-margin-top:20px;
+margin-top:30px;
 border-radius:10px;
 padding:10px;
 }
@@ -50,7 +49,7 @@ padding:10px;
 
 <div class="grid">
 
-<div class="card">Price: <span id="price"></span></div>
+<div class="card">Price: $<span id="price"></span></div>
 <div class="card">Cash: $<span id="cash"></span></div>
 <div class="card">DOGE: <span id="doge"></span></div>
 <div class="card">Equity: $<span id="equity"></span></div>
@@ -59,33 +58,33 @@ padding:10px;
 
 </div>
 
-<canvas id="priceChart"></canvas>
+<canvas id="chart"></canvas>
 
 <script>
 
-let priceChart = new Chart(
-document.getElementById('priceChart'),
+let chart = new Chart(
+document.getElementById("chart"),
 {
-type:'line',
-data:{labels:[],datasets:[{label:'DOGE',data:[]}]}
+type:"line",
+data:{labels:[],datasets:[{label:"DOGE",data:[]}]}
 }
 )
 
 async function update(){
 
-let r = await fetch('/data')
+let r = await fetch("/data")
 let d = await r.json()
 
-document.getElementById('price').innerText=d.price
-document.getElementById('cash').innerText=d.cash.toFixed(2)
-document.getElementById('doge').innerText=d.doge.toFixed(2)
-document.getElementById('equity').innerText=d.equity.toFixed(2)
-document.getElementById('wins').innerText=d.wins
-document.getElementById('losses').innerText=d.losses
+document.getElementById("price").innerText=d.price.toFixed(5)
+document.getElementById("cash").innerText=d.cash.toFixed(2)
+document.getElementById("doge").innerText=d.doge.toFixed(2)
+document.getElementById("equity").innerText=d.equity.toFixed(2)
+document.getElementById("wins").innerText=d.wins
+document.getElementById("losses").innerText=d.losses
 
-priceChart.data.labels=d.prices.map((_,i)=>i)
-priceChart.data.datasets[0].data=d.prices
-priceChart.update()
+chart.data.labels=d.prices.map((_,i)=>i)
+chart.data.datasets[0].data=d.prices
+chart.update()
 
 }
 
