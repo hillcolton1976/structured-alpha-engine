@@ -5,12 +5,14 @@ import time
 from collections import deque
 import statistics
 import random
+import json
 
 app = Flask(__name__)
 
-# ---------- START SETTINGS ----------
+# -------- SETTINGS --------
 
 START_CASH = 50
+
 cash = START_CASH
 doge = 0
 entry_price = 0
@@ -18,30 +20,30 @@ entry_price = 0
 wins = 0
 losses = 0
 
+bot_level = 1
+xp = 0
+strategy = "dip"
+
 trade_log = []
 
 prices = deque(maxlen=300)
-
-bot_level = 1
-xp = 0
-
-strategy = "dip"
+equity_history = deque(maxlen=300)
 
 API = "https://api.coingecko.com/api/v3/simple/price?ids=dogecoin&vs_currencies=usd"
 
-# ---------- GET PRICE ----------
+
+# -------- GET PRICE --------
 
 def get_price():
 
     try:
         r = requests.get(API, timeout=10)
-        data = r.json()
-        return float(data["dogecoin"]["usd"])
+        return r.json()["dogecoin"]["usd"]
     except:
         return None
 
 
-# ---------- RSI ----------
+# -------- RSI --------
 
 def rsi(period=14):
 
@@ -68,80 +70,62 @@ def rsi(period=14):
     return 100 - (100/(1+rs))
 
 
-# ---------- MOMENTUM ----------
+# -------- DIP SIGNAL --------
 
-def momentum():
+def dip(price):
 
-    if len(prices) < 20:
-        return 0
-
-    recent = list(prices)[-5:]
-    older = list(prices)[-20:-15]
-
-    return statistics.mean(recent) - statistics.mean(older)
-
-
-# ---------- DIP DETECTION ----------
-
-def dip_signal(price):
+    if len(prices) < 30:
+        return False
 
     short = statistics.mean(list(prices)[-10:])
-    long = statistics.mean(list(prices)[-50:])
+    long = statistics.mean(list(prices)[-30:])
 
-    if price < short * 0.995 and price < long * 0.997:
-        return True
-
-    return False
+    return price < short*0.995 and price < long*0.997
 
 
-# ---------- PUMP DETECTION ----------
+# -------- PUMP SIGNAL --------
 
-def pump_signal(price):
+def pump(price):
+
+    if len(prices) < 20:
+        return False
 
     short = statistics.mean(list(prices)[-5:])
     mid = statistics.mean(list(prices)[-20:])
 
-    if short > mid * 1.002:
-        return True
-
-    return False
+    return short > mid*1.002
 
 
-# ---------- ANALYSIS ----------
+# -------- ANALYZE --------
 
 def analyze():
 
-    if len(prices) < 60:
+    if len(prices) < 40:
         return "hold"
 
     price = prices[-1]
+
     r = rsi()
-    m = momentum()
 
-    signal = "hold"
-
-    # STRATEGY 1 — DIP BUY
     if strategy == "dip":
 
-        if dip_signal(price) and r < 45:
-            signal = "buy"
+        if dip(price) and r < 45:
+            return "buy"
 
-    # STRATEGY 2 — MOMENTUM
     if strategy == "momentum":
 
-        if m > 0 and pump_signal(price):
-            signal = "buy"
+        if pump(price):
+            return "buy"
 
-    # STRATEGY 3 — RANDOM SCALP
     if strategy == "scalp":
 
         if r < 40 and random.random() > 0.5:
-            signal = "buy"
+            return "buy"
 
-    return signal
+    return "hold"
 
 
-# ---------- LEARNING ----------
+# -------- LEARNING --------
 
 def learn(win):
 
@@ -152,18 +136,17 @@ def learn(win):
     if win:
         xp += 10
     else:
-        xp += 3
+        xp += 4
 
     if xp > bot_level * 100:
 
         bot_level += 1
         xp = 0
 
-        # switch strategy sometimes
         strategy = random.choice(["dip","momentum","scalp"])
 
 
-# ---------- TRADER ----------
+# -------- TRADER --------
 
 def trader():
 
@@ -183,9 +166,12 @@ def trader():
 
         prices.append(price)
 
+        doge_value = doge * price
+        equity_history.append(cash + doge_value)
+
         signal = analyze()
 
-        # ---------- BUY ----------
+        # BUY
 
         if signal == "buy" and cash > 5:
 
@@ -198,17 +184,16 @@ def trader():
 
             trade_log.append(f"BUY {qty:.2f} DOGE @ ${price:.5f}")
 
-        # ---------- SELL ----------
+        # SELL
 
         if doge > 0:
 
             profit = (price-entry_price)/entry_price*100
 
             target = 0.6 + bot_level*0.05
-
             stop = -1.8
 
-            if profit > target or profit < stop or pump_signal(price):
+            if profit > target or profit < stop or pump(price):
 
                 value = doge * price
 
@@ -227,10 +212,10 @@ def trader():
 
                 doge = 0
 
-        time.sleep(12)
+        time.sleep(10)
 
 
-# ---------- DASHBOARD ----------
+# -------- DASHBOARD --------
 
 @app.route("/")
 
@@ -242,87 +227,179 @@ def dashboard():
 
     equity = cash + doge_value
 
-    log = "<br>".join(trade_log[-20:][::-1])
+    pnl = ((equity-START_CASH)/START_CASH*100) if START_CASH else 0
+
+    log = "<br>".join(trade_log[-15:][::-1])
+
+    price_data = json.dumps(list(prices))
+    equity_data = json.dumps(list(equity_history))
 
     return f"""
 
-    <html>
+<html>
 
-    <head>
+<head>
 
-    <meta http-equiv="refresh" content="8">
+<meta http-equiv="refresh" content="8">
 
-    <style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-    body {{
-        background:#0f172a;
-        color:white;
-        font-family:Arial;
-        padding:40px;
-    }}
+<style>
 
-    h1 {{
-        color:#facc15;
-    }}
+body {{
+background:#0f172a;
+color:white;
+font-family:Arial;
+padding:30px;
+}}
 
-    .card {{
-        background:#1e293b;
-        padding:20px;
-        margin:10px;
-        border-radius:12px;
-        box-shadow:0 0 10px #000;
-    }}
+h1 {{
+color:#facc15;
+}}
 
-    .profit {{
-        color:#22c55e;
-    }}
+.card {{
+background:#1e293b;
+padding:20px;
+margin:10px;
+border-radius:10px;
+}}
 
-    .loss {{
-        color:#ef4444;
-    }}
+.grid {{
+display:grid;
+grid-template-columns:repeat(3,1fr);
+gap:10px;
+}}
 
-    </style>
+canvas {{
+background:#111827;
+padding:10px;
+border-radius:10px;
+}}
 
-    </head>
+</style>
 
-    <body>
+</head>
 
-    <h1>DOGE AI v5</h1>
+<body>
 
-    <div class="card">
-    Price: ${price:.5f}
-    </div>
+<h1>DOGE AI TRADER</h1>
 
-    <div class="card">
+<div class="grid">
 
-    Cash: ${cash:.2f}<br>
-    DOGE: {doge:.2f}<br>
-    DOGE Value: ${doge_value:.2f}<br>
-    Equity: ${equity:.2f}
+<div class="card">
+Price<br>
+${price:.5f}
+</div>
 
-    </div>
+<div class="card">
+Cash<br>
+${cash:.2f}
+</div>
 
-    <div class="card">
+<div class="card">
+DOGE Held<br>
+{doge:.2f}
+</div>
 
-    Wins: {wins}<br>
-    Losses: {losses}<br>
-    Level: {bot_level}<br>
-    XP: {xp}<br>
-    Strategy: {strategy}
+<div class="card">
+DOGE Value<br>
+${doge_value:.2f}
+</div>
 
-    </div>
+<div class="card">
+Equity<br>
+${equity:.2f}
+</div>
 
-    <div class="card">
+<div class="card">
+P/L<br>
+{pnl:.2f}%
+</div>
 
-    <h3>Trades</h3>
+<div class="card">
+Wins<br>
+{wins}
+</div>
 
-    {log}
+<div class="card">
+Losses<br>
+{losses}
+</div>
 
-    </div>
+<div class="card">
+Level<br>
+{bot_level}
+</div>
 
-    </body>
-    </html>
-    """
+</div>
+
+<br>
+
+<div class="card">
+
+<h3>DOGE Price Chart</h3>
+
+<canvas id="priceChart"></canvas>
+
+</div>
+
+<br>
+
+<div class="card">
+
+<h3>Portfolio Value</h3>
+
+<canvas id="equityChart"></canvas>
+
+</div>
+
+<br>
+
+<div class="card">
+
+<h3>Trades</h3>
+
+{log}
+
+</div>
+
+<script>
+
+let priceData = {price_data}
+let equityData = {equity_data}
+
+new Chart(document.getElementById("priceChart"), {{
+type: 'line',
+data: {{
+labels: priceData.map((_,i)=>i),
+datasets:[{{
+label:'DOGE Price',
+data: priceData,
+borderColor:'#22c55e',
+fill:false
+}}]
+}}
+}})
+
+new Chart(document.getElementById("equityChart"), {{
+type: 'line',
+data: {{
+labels: equityData.map((_,i)=>i),
+datasets:[{{
+label:'Portfolio Value',
+data: equityData,
+borderColor:'#facc15',
+fill:false
+}}]
+}}
+}})
+
+</script>
+
+</body>
+</html>
+
+"""
 
 
 threading.Thread(target=trader, daemon=True).start()
