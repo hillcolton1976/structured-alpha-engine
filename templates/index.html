@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+
+<title>DOGE AI Trader</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+
+body{
+background:#0f172a;
+color:white;
+font-family:Arial;
+padding:30px;
+}
+
+.title{
+color:#fbbf24;
+font-size:30px;
+margin-bottom:20px;
+}
+
+.grid{
+display:grid;
+grid-template-columns:repeat(3,1fr);
+gap:15px;
+}
+
+.card{
+background:#1e293b;
+padding:20px;
+border-radius:10px;
+}
+
+canvas{
+background:#1e293b;
+margin-top:20px;
+border-radius:10px;
+padding:10px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="title">DOGE AI TRADER</div>
+
+<div class="grid">
+
+<div class="card">Price: <span id="price"></span></div>
+<div class="card">Cash: $<span id="cash"></span></div>
+<div class="card">DOGE: <span id="doge"></span></div>
+<div class="card">Equity: $<span id="equity"></span></div>
+<div class="card">Wins: <span id="wins"></span></div>
+<div class="card">Losses: <span id="losses"></span></div>
+
+</div>
+
+<canvas id="priceChart"></canvas>
+
+<script>
+
+let priceChart = new Chart(
+document.getElementById('priceChart'),
+{
+type:'line',
+data:{labels:[],datasets:[{label:'DOGE',data:[]}]}
+}
+)
+
+async function update(){
+
+let r = await fetch('/data')
+let d = await r.json()
+
+document.getElementById('price').innerText=d.price
+document.getElementById('cash').innerText=d.cash.toFixed(2)
+document.getElementById('doge').innerText=d.doge.toFixed(2)
+document.getElementById('equity').innerText=d.equity.toFixed(2)
+document.getElementById('wins').innerText=d.wins
+document.getElementById('losses').innerText=d.losses
+
+priceChart.data.labels=d.prices.map((_,i)=>i)
+priceChart.data.datasets[0].data=d.prices
+priceChart.update()
+
+}
+
+setInterval(update,3000)
+
+</script>
+
+</body>
+</html>
